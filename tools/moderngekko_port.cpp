@@ -224,6 +224,8 @@ bool ApplyGalaxyFprf(const fs::path& generated)
   return static_cast<bool>(output);
 }
 
+#include "galaxypad_thp_policy.inc"
+
 std::string Trim(std::string value)
 {
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -645,6 +647,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   }
   const std::string fprf_policy = GalaxyFprfPolicy(game.disc_id, game.dol_sha256,
       options.backend, options.c_chunk_instructions);
+  const std::string thp_policy = GalaxyThpPolicy(game.disc_id, game.dol_sha256,
+      options.backend, options.c_chunk_instructions);
   std::ostringstream source_fingerprint;
   source_fingerprint << std::hex << std::setfill('0') << std::setw(16)
                      << Fnv1a(*module_sources);
@@ -655,7 +659,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
       std::string(architecture) + "|" + flags + "|backend=" + options.backend +
       "|" + codegen_options + "|patches=" + patches.fingerprint +
       "|dolrecomp_binary=" + *dolrecomp_hash +
-      "|module_sources=" + source_fingerprint.str() + "|fprf_policy=" + fprf_policy;
+      "|module_sources=" + source_fingerprint.str() + "|fprf_policy=" + fprf_policy +
+      "|thp_policy=" + thp_policy;
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
   const std::string cache_key = game.dol_sha256 + "-" + key_tail.str();
@@ -682,6 +687,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
              << "dolrecomp_binary_sha256=" << *dolrecomp_hash << '\n'
              << "module_sources_fnv1a=" << source_fingerprint.str() << '\n'
              << "fprf_policy=" << fprf_policy << '\n'
+             << "thp_policy=" << thp_policy << '\n'
              << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
              << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
              << "compiler=" << compiler_identity << '\n'
@@ -748,6 +754,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     return std::nullopt;
   }
   if (fprf_policy != "none" && !ApplyGalaxyFprf(generated))
+    return std::nullopt;
+  if (thp_policy != "none" && !ApplyGalaxyThp(generated))
     return std::nullopt;
   if (emitted_header.filename() != "generated.h")
     fs::copy_file(emitted_header, generated / "generated.h", fs::copy_options::overwrite_existing);
