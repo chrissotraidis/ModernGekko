@@ -471,7 +471,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
 #endif
   const std::vector<std::string> audio_backends =
       AudioCommon::GetSoundBackends();
-  if (impl->config.headless) {
+  if (impl->config.headless && impl->config.audio.backend.empty()) {
     impl->config.audio.backend = BACKEND_NULLSOUND;
   } else if (impl->config.audio.backend.empty() ||
              !std::ranges::contains(audio_backends,
