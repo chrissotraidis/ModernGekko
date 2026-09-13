@@ -40,6 +40,10 @@ std::string NormalizeGraphicsBackend(std::string value) {
     return "Vulkan";
   if (lower == "opengl" || lower == "ogl")
     return "OGL";
+#if defined(__APPLE__)
+  if (lower == "metal")
+    return "Metal";
+#endif
   return {};
 }
 
@@ -84,10 +88,14 @@ const std::vector<ResolutionOption> &SupportedResolutions() {
 }
 
 const std::vector<GraphicsBackendOption> &SupportedGraphicsBackends() {
+#if defined(__APPLE__)
+  static const std::vector<GraphicsBackendOption> backends = {{"Metal", "Metal"}};
+#else
   static const std::vector<GraphicsBackendOption> backends = {
       {"Vulkan", "Vulkan"},
       {"OpenGL", "OGL"},
   };
+#endif
   return backends;
 }
 
