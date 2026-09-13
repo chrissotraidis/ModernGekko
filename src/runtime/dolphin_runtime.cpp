@@ -1,4 +1,5 @@
 #include "moderngekko/runtime.hpp"
+#include "vi-timing-recorder.h"
 
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
@@ -47,6 +48,7 @@ extern "C" void ModernGekkoSetIOSRenderSurface(void* surface);
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <mutex>
 #include <string_view>
@@ -233,6 +235,14 @@ struct Runtime::Impl {
   Common::EventHook diagnostics_before_present_hook;
   Common::EventHook diagnostics_after_present_hook;
   Common::EventHook diagnostics_vi_hook;
+  galaxypad::ViTimingRecorder vi_timing;
+  void FlushViTiming() {
+    const auto result = vi_timing.FlushAfterJoin();
+    if (result != galaxypad::ViTimingRecorder::Result::Disabled)
+      std::fprintf(stderr, "[moderngekko] vi-timing: export_result=%d (1=saved,2=open_failed,3=write_failed)\n",
+                   static_cast<int>(result));
+  }
+
   bool ui_initialized = false;
   bool controllers_initialized = false;
   std::atomic<bool> booted{false};
@@ -551,6 +561,7 @@ Runtime::~Runtime() {
     m_impl->diagnostics_vi_hook = {};
     Core::Stop(Core::System::GetInstance());
     Core::Shutdown(Core::System::GetInstance());
+    m_impl->FlushViTiming();
   }
   m_impl->state_hook = {};
   if (m_impl->controllers_initialized)
@@ -572,6 +583,7 @@ RuntimeRunResult Runtime::Run() {
                          "runtime is already running"}};
 
   GalaxyPadDiagnostics::Reset();
+  m_impl->vi_timing.Configure(std::getenv("GALAXYPAD_VI_TIMING"));
   m_impl->diagnostic_frame_count = 0;
   m_impl->diagnostic_first_frame_ns = std::numeric_limits<std::uint64_t>::max();
   m_impl->diagnostic_last_frame_ns = 0;
@@ -681,7 +693,14 @@ RuntimeRunResult Runtime::Run() {
   m_impl->diagnostics_after_present_hook = GetVideoEvents().after_present_event.Register(
       [](PresentInfo&) { GalaxyPadDiagnostics::RecordPhase("present_done"); });
   m_impl->diagnostics_vi_hook = GetVideoEvents().vi_end_field_event.Register(
-      [] { GalaxyPadDiagnostics::RecordPhase("vi_end_field"); });
+      [this] {
+        if (m_impl->vi_timing.Enabled())
+          m_impl->vi_timing.Record(
+              GalaxyPadDiagnostics::s_efb_peek_ns.load(std::memory_order_relaxed),
+              static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  Core::System::GetInstance().GetPerfMetrics().GetCPUThrottleElapsed()).count()));
+        GalaxyPadDiagnostics::RecordPhase("vi_end_field");
+      });
   std::atomic_bool stop_title_thread = false;
   std::thread title_thread;
   if (!m_impl->config.headless && m_impl->config.show_fps_in_title) {
@@ -708,6 +727,7 @@ RuntimeRunResult Runtime::Run() {
   m_impl->diagnostics_vi_hook = {};
   Core::Stop(Core::System::GetInstance());
   Core::Shutdown(Core::System::GetInstance());
+  m_impl->FlushViTiming();
   m_impl->booted = false;
   m_impl->running = false;
   return {};
