@@ -19,16 +19,18 @@ public:
     bool cpu_clock_valid{};
     std::uint64_t efb_elapsed_ns{};
     std::uint64_t throttle_elapsed_ns{};
+    std::uint64_t idle_wait_elapsed_ns{};
   };
 
   void Record(std::uint64_t wall_ns, std::uint64_t cpu_ns, bool cpu_valid,
-              std::uint64_t efb_ns = 0, std::uint64_t throttle_ns = 0) noexcept {
+              std::uint64_t efb_ns = 0, std::uint64_t throttle_ns = 0,
+              std::uint64_t idle_ns = 0) noexcept {
     if (size_ == Capacity) {
       if (dropped_ != std::numeric_limits<std::uint64_t>::max())
         ++dropped_;
       return;
     }
-    samples_[size_++] = {wall_ns, cpu_ns, cpu_valid, efb_ns, throttle_ns};
+    samples_[size_++] = {wall_ns, cpu_ns, cpu_valid, efb_ns, throttle_ns, idle_ns};
   }
 
   void Reset() noexcept { size_ = 0; dropped_ = 0; }

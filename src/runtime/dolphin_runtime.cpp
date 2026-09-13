@@ -584,6 +584,8 @@ RuntimeRunResult Runtime::Run() {
 
   GalaxyPadDiagnostics::Reset();
   m_impl->vi_timing.Configure(std::getenv("GALAXYPAD_VI_TIMING"));
+  Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().Configure(
+      m_impl->vi_timing.Enabled());
   m_impl->diagnostic_frame_count = 0;
   m_impl->diagnostic_first_frame_ns = std::numeric_limits<std::uint64_t>::max();
   m_impl->diagnostic_last_frame_ns = 0;
@@ -698,7 +700,8 @@ RuntimeRunResult Runtime::Run() {
           m_impl->vi_timing.Record(
               GalaxyPadDiagnostics::s_efb_peek_ns.load(std::memory_order_relaxed),
               static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  Core::System::GetInstance().GetPerfMetrics().GetCPUThrottleElapsed()).count()));
+                  Core::System::GetInstance().GetPerfMetrics().GetCPUThrottleElapsed()).count()),
+              Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().ElapsedNs());
         GalaxyPadDiagnostics::RecordPhase("vi_end_field");
       });
   std::atomic_bool stop_title_thread = false;
