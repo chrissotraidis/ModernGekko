@@ -391,6 +391,12 @@ int RunMain(int argc, char **argv) {
   const moderngekko::RuntimeDiagnosticsSnapshot diagnostics =
       created.runtime->GetDiagnosticsSnapshot();
   std::cout << "[moderngekko] graphics: frames=" << diagnostics.frame_count
+            << " active_ns=" << diagnostics.frame_active_ns
+            << " max_gap_ns=" << diagnostics.frame_max_gap_ns
+            << " gaps_ge_20ms=" << diagnostics.frame_gaps_ge_20ms
+            << " gaps_ge_33ms=" << diagnostics.frame_gaps_ge_33ms
+            << " gaps_ge_50ms=" << diagnostics.frame_gaps_ge_50ms
+            << " gaps_ge_100ms=" << diagnostics.frame_gaps_ge_100ms
             << " projection_hash=0x" << std::hex << diagnostics.projection_hash
             << std::dec << " draws=" << diagnostics.draw_calls
             << " primitives=" << diagnostics.primitives
@@ -410,7 +416,8 @@ int RunMain(int argc, char **argv) {
             << " started=" << diagnostics.audio_started
             << " stopped=" << diagnostics.audio_stopped
             << " drained=" << diagnostics.audio_drained
-            << " errors=" << diagnostics.audio_errors << '\n';
+            << " errors=" << diagnostics.audio_errors
+            << " active_ns=" << diagnostics.audio_active_ns << '\n';
   std::cout << "[moderngekko] dma: enqueues=" << diagnostics.dma_enqueues
             << " underruns=" << diagnostics.dma_underruns
             << " backlog_drops=" << diagnostics.dma_backlog_drops
@@ -418,6 +425,11 @@ int RunMain(int argc, char **argv) {
             << " queue_min=" << diagnostics.dma_queue_min
             << " queue_max=" << diagnostics.dma_queue_max
             << " producer_max_gap_ns=" << diagnostics.dma_producer_max_gap_ns
+            << " active_ns=" << diagnostics.dma_active_ns
+            << " gaps_ge_10ms=" << diagnostics.dma_gaps_ge_10ms
+            << " gaps_ge_20ms=" << diagnostics.dma_gaps_ge_20ms
+            << " gaps_ge_50ms=" << diagnostics.dma_gaps_ge_50ms
+            << " gaps_ge_100ms=" << diagnostics.dma_gaps_ge_100ms
             << " first_underrun_enqueue=" << diagnostics.dma_first_underrun_enqueue
             << " last_underrun_enqueue=" << diagnostics.dma_last_underrun_enqueue
             << " first_backlog_enqueue=" << diagnostics.dma_first_backlog_enqueue

@@ -24,6 +24,12 @@ using RuntimeLogCallback = void (*)(RuntimeLogLevel level, const char* category,
 struct RuntimeDiagnosticsSnapshot
 {
   std::uint64_t frame_count = 0;
+  std::uint64_t frame_active_ns = 0;
+  std::uint64_t frame_max_gap_ns = 0;
+  std::uint64_t frame_gaps_ge_20ms = 0;
+  std::uint64_t frame_gaps_ge_33ms = 0;
+  std::uint64_t frame_gaps_ge_50ms = 0;
+  std::uint64_t frame_gaps_ge_100ms = 0;
   std::uint64_t projection_hash = 0;
   std::uint32_t draw_calls = 0;
   std::uint32_t primitives = 0;
@@ -44,6 +50,7 @@ struct RuntimeDiagnosticsSnapshot
   std::uint64_t audio_stopped = 0;
   std::uint64_t audio_drained = 0;
   std::uint64_t audio_errors = 0;
+  std::uint64_t audio_active_ns = 0;
   std::uint64_t dma_enqueues = 0;
   std::uint64_t dma_underruns = 0;
   std::uint64_t dma_backlog_drops = 0;
@@ -51,6 +58,11 @@ struct RuntimeDiagnosticsSnapshot
   std::uint64_t dma_queue_min = 0;
   std::uint64_t dma_queue_max = 0;
   std::uint64_t dma_producer_max_gap_ns = 0;
+  std::uint64_t dma_active_ns = 0;
+  std::uint64_t dma_gaps_ge_10ms = 0;
+  std::uint64_t dma_gaps_ge_20ms = 0;
+  std::uint64_t dma_gaps_ge_50ms = 0;
+  std::uint64_t dma_gaps_ge_100ms = 0;
   std::uint64_t dma_first_underrun_enqueue = 0;
   std::uint64_t dma_last_underrun_enqueue = 0;
   std::uint64_t dma_first_backlog_enqueue = 0;
