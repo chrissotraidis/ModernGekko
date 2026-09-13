@@ -458,7 +458,8 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   Config::SetBase(Config::GFX_SHADER_CACHE, true);
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
-  Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+  Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING,
+                  !impl->config.headless);
 #ifdef MODERNGEKKO_HAVE_IOS
   // Dolphin's ARM64 vertex loader generates executable host code. iOS forbids
   // that JIT path, so use the portable software vertex loader.
