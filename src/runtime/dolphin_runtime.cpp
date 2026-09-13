@@ -378,6 +378,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
 
   if (!s_external_ui_common) {
     UICommon::SetUserDirectory(impl->config.user_directory.string());
+    UICommon::CreateDirectories();
     UICommon::Init();
     impl->ui_initialized = true;
   }
