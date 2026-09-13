@@ -15,6 +15,7 @@
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/SessionSettings.h"
+#include "Core/Config/StaticRecompSettings.h"
 #include "Core/Core.h"
 #include "Core/Debugger/PPCDebugInterface.h"
 #include "Core/HW/GBACore.h"
@@ -48,6 +49,7 @@ extern "C" void ModernGekkoSetIOSRenderSurface(void* surface);
 #include <cstdio>
 #include <fmt/format.h>
 #include <mutex>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -447,6 +449,16 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   SetDolphinLogCallback(impl->config.log_callback, impl->config.log_user_data);
 
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
+  // RMGE01's scheduler spins at this address while no guest thread is runnable.
+  // Dolphin's dynamic cores detect this loop automatically; tell StaticRecomp's
+  // existing idle skipper about the exact loop for the audited DOL only.
+  constexpr std::string_view rmge01_dol_sha256 =
+      "2c680585a8f58e1cc9c5521b579057f12b124ff0ef409e470a57606c50a93c09";
+  constexpr u32 rmge01_idle_pc = 0x804AB358u;
+  Config::SetBase(
+      Config::MAIN_STATICRECOMP_IDLE_PC,
+      impl->metadata.disc_id == "RMGE01" && impl->metadata.dol_sha256 == rmge01_dol_sha256 ?
+          rmge01_idle_pc : 0u);
 #ifdef MODERNGEKKO_HAVE_IOS
   // StaticRecomp's empty block cache only observes invalidations. It cannot
   // use Dolphin's 64 GiB JIT entry-point map, which iOS refuses to reserve.
