@@ -589,6 +589,8 @@ RuntimeRunResult Runtime::Run() {
 
   GalaxyPadDiagnostics::Reset();
   m_impl->vi_timing.Configure(std::getenv("GALAXYPAD_VI_TIMING"));
+  Core::System::GetInstance().GetPerfMetrics().GetCPUDVDWaitTiming().Configure(
+      m_impl->vi_timing.Enabled());
   const char* completion_path = std::getenv("GALAXYPAD_COMPLETION_TIMING");
   std::uint64_t completion_deadline = 0;
   constexpr std::uint64_t completion_threshold = 20'000'000;
@@ -722,7 +724,8 @@ RuntimeRunResult Runtime::Run() {
               GalaxyPadDiagnostics::s_efb_peek_ns.load(std::memory_order_relaxed),
               static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                   Core::System::GetInstance().GetPerfMetrics().GetCPUThrottleElapsed()).count()),
-              Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().ElapsedNs());
+              Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().ElapsedNs(),
+              Core::System::GetInstance().GetPerfMetrics().GetCPUDVDWaitTiming().ElapsedNs());
         GalaxyPadDiagnostics::RecordPhase("vi_end_field");
       });
   std::atomic_bool stop_title_thread = false;

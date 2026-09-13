@@ -28,13 +28,14 @@ public:
       return;
     const auto sample = clock();
     buffer_->Record(sample.wall_ns, sample.thread_cpu_ns, sample.cpu_clock_valid,
-                    sample.efb_elapsed_ns, sample.throttle_elapsed_ns, sample.idle_wait_elapsed_ns);
+                    sample.efb_elapsed_ns, sample.throttle_elapsed_ns, sample.idle_wait_elapsed_ns,
+                    sample.dvd_wait_elapsed_ns);
   }
 
   bool Enabled() const noexcept { return buffer_ && !finished_; }
 
   void Record(std::uint64_t efb_ns = 0, std::uint64_t throttle_ns = 0,
-              std::uint64_t idle_ns = 0) noexcept {
+              std::uint64_t idle_ns = 0, std::uint64_t dvd_ns = 0) noexcept {
     RecordWithClock([=]() noexcept {
       const auto wall = std::chrono::steady_clock::now().time_since_epoch();
       timespec cpu{};
@@ -47,7 +48,7 @@ public:
               std::chrono::duration_cast<std::chrono::nanoseconds>(wall).count()),
           valid ? static_cast<std::uint64_t>(cpu.tv_sec) * 1'000'000'000 +
                       static_cast<std::uint64_t>(cpu.tv_nsec) : 0,
-          valid, efb_ns, throttle_ns, idle_ns};
+          valid, efb_ns, throttle_ns, idle_ns, dvd_ns};
     });
   }
 
@@ -59,17 +60,18 @@ public:
     std::FILE* file = std::fopen(path_.c_str(), "wx");
     if (!file)
       return result_ = Result::OpenFailed;
-    bool ok = std::fprintf(file, "# dropped=%llu\nwall_ns,thread_cpu_ns,cpu_clock_valid,efb_elapsed_ns,throttle_elapsed_ns,idle_wait_elapsed_ns\n",
+    bool ok = std::fprintf(file, "# dropped=%llu\nwall_ns,thread_cpu_ns,cpu_clock_valid,efb_elapsed_ns,throttle_elapsed_ns,idle_wait_elapsed_ns,dvd_wait_elapsed_ns\n",
                            static_cast<unsigned long long>(buffer_->Dropped())) >= 0;
     for (std::size_t i = 0; i < buffer_->Size() && ok; ++i) {
       const auto& sample = buffer_->Data()[i];
-      ok = std::fprintf(file, "%llu,%llu,%u,%llu,%llu,%llu\n",
+      ok = std::fprintf(file, "%llu,%llu,%u,%llu,%llu,%llu,%llu\n",
                         static_cast<unsigned long long>(sample.wall_ns),
                         static_cast<unsigned long long>(sample.thread_cpu_ns),
                         sample.cpu_clock_valid ? 1u : 0u,
                         static_cast<unsigned long long>(sample.efb_elapsed_ns),
                         static_cast<unsigned long long>(sample.throttle_elapsed_ns),
-                        static_cast<unsigned long long>(sample.idle_wait_elapsed_ns)) >= 0;
+                        static_cast<unsigned long long>(sample.idle_wait_elapsed_ns),
+                        static_cast<unsigned long long>(sample.dvd_wait_elapsed_ns)) >= 0;
     }
     if (std::fclose(file) != 0)
       ok = false;
