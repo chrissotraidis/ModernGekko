@@ -411,24 +411,24 @@ bool GenerateControllerConfig(const fs::path &user_directory,
     if (i >= controllers.size())
       continue;
     output << "Device = " << controllers[i] << '\n'
-           << "Buttons/A = `Shoulder L`\n"
-              "Buttons/B = `Shoulder R`\n"
+           << "Buttons/A = `Button A`\n"
+              "Buttons/B = `Button B`\n"
               "Buttons/1 = `Button W`\n"
               "Buttons/2 = `Button S`\n"
               "Buttons/- = Back\n"
               "Buttons/+ = Start\n"
               "Buttons/Home = Guide\n"
-              "D-Pad/Up = `Pad N` | `Left Y+`\n"
-              "D-Pad/Down = `Pad S` | `Left Y-`\n"
-              "D-Pad/Left = `Pad W` | `Left X-`\n"
-              "D-Pad/Right = `Pad E` | `Left X+`\n"
-              "IR/Up = `Cursor Y-`\n"
-              "IR/Down = `Cursor Y+`\n"
-              "IR/Left = `Cursor X-`\n"
-              "IR/Right = `Cursor X+`\n"
-              "Shake/X = `Trigger L`\n"
-              "Shake/Y = `Trigger R`\n"
-              "Shake/Z = `Trigger L`\n"
+              "D-Pad/Up = `Pad N`\n"
+              "D-Pad/Down = `Pad S`\n"
+              "D-Pad/Left = `Pad W`\n"
+              "D-Pad/Right = `Pad E`\n"
+              "IR/Up = `Right Y+`\n"
+              "IR/Down = `Right Y-`\n"
+              "IR/Left = `Right X-`\n"
+              "IR/Right = `Right X+`\n"
+              "Shake/X = `Button X`\n"
+              "Shake/Y = `Button X`\n"
+              "Shake/Z = `Button X`\n"
               "IRPassthrough/Object 1 X = `IR Object 1 X`\n"
               "IRPassthrough/Object 1 Y = `IR Object 1 Y`\n"
               "IRPassthrough/Object 1 Size = `IR Object 1 Size`\n"
@@ -454,8 +454,15 @@ bool GenerateControllerConfig(const fs::path &user_directory,
               "IMUGyroscope/Yaw Left = `Gyro Yaw Left`\n"
               "IMUGyroscope/Yaw Right = `Gyro Yaw Right`\n"
               "Rumble/Motor = Motor\n"
-              "Extension = None\n"
-              "Options/Sideways Wiimote = True\n";
+              "Extension = Nunchuk\n"
+              "Nunchuk/Buttons/C = `Shoulder L`\n"
+              "Nunchuk/Buttons/Z = `Trigger L`\n"
+              "Nunchuk/Stick/Up = `Left Y+`\n"
+              "Nunchuk/Stick/Down = `Left Y-`\n"
+              "Nunchuk/Stick/Left = `Left X-`\n"
+              "Nunchuk/Stick/Right = `Left X+`\n"
+              "Nunchuk/Stick/Calibration = 100 100 100 100 100 100 100 100\n"
+              "Options/Sideways Wiimote = False\n";
 #endif
   }
 #ifndef MODERNGEKKO_GAMECUBE_CONTROLLERS
@@ -471,7 +478,7 @@ bool GenerateControllerConfig(const fs::path &user_directory,
 #ifdef MODERNGEKKO_GAMECUBE_CONTROLLERS
                " GameCube controller" +
 #else
-               " sideways Wii Remote" +
+               " Wii Remote + Nunchuk profile" +
 #endif
                (controllers.size() == 1 ? " mapped" : "s mapped");
   return true;

@@ -52,7 +52,7 @@ constexpr std::string_view CONTROLLER_PROFILE_NAME = "GCPadNew.ini";
 constexpr std::string_view GENERATED_PROFILE_LABEL = "GameCube profile";
 #else
 constexpr std::string_view CONTROLLER_PROFILE_NAME = "WiimoteNew.ini";
-constexpr std::string_view GENERATED_PROFILE_LABEL = "sideways profile";
+constexpr std::string_view GENERATED_PROFILE_LABEL = "Wii Remote + Nunchuk profile";
 #endif
 
 struct ExtractionState
@@ -251,6 +251,10 @@ bool WriteDefaultGame(const fs::path& user_directory, const fs::path& release_di
 std::vector<fs::path> FindDiscImages()
 {
   std::vector<fs::path> images;
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  // Branded builds require an explicit selection, not an arbitrary Documents scan.
+  return images;
+#endif
   std::error_code ec;
   const fs::path documents = DocumentsDirectory();
   if (!fs::is_directory(documents, ec))
@@ -1146,7 +1150,17 @@ int main(int argc, char** argv)
       {
         SDL_HideWindow(window);
         int exit_code = 1;
-        const bool waited = SDL_WaitProcess(process, true, &exit_code);
+        // Keep AppKit/SDL responsive while the hidden launcher monitors its child.
+        bool waited = false;
+        for (;;)
+        {
+          SDL_ClearError();
+          waited = SDL_WaitProcess(process, false, &exit_code);
+          if (waited || *SDL_GetError())
+            break;
+          SDL_PumpEvents();
+          SDL_Delay(50);
+        }
         SDL_DestroyProcess(process);
         if (!waited || exit_code != 0)
         {

@@ -111,16 +111,20 @@ int main() {
     return 5;
   }
 #else
-  if (!generated.contains("Buttons/A = `Shoulder L`\n") ||
+  if (!generated.contains("Buttons/A = `Button A`\n") ||
+      !generated.contains("Buttons/B = `Button B`\n") ||
       !generated.contains("Buttons/1 = `Button W`\n") ||
       !generated.contains("Buttons/2 = `Button S`\n") ||
-      !generated.contains("Shake/X = `Trigger L`\n") ||
-      !generated.contains("D-Pad/Up = `Pad N` | `Left Y+`\n") ||
-      !generated.contains("D-Pad/Right = `Pad E` | `Left X+`\n") ||
-      !generated.contains("Extension = None\n") ||
-      !generated.contains("Options/Sideways Wiimote = True\n") ||
+      !generated.contains("Shake/X = `Button X`\n") ||
+      !generated.contains("IR/Up = `Right Y+`\n") ||
+      !generated.contains("D-Pad/Up = `Pad N`\n") ||
+      !generated.contains("Nunchuk/Stick/Right = `Left X+`\n") ||
+      !generated.contains("Nunchuk/Buttons/C = `Shoulder L`\n") ||
+      !generated.contains("Nunchuk/Buttons/Z = `Trigger L`\n") ||
+      !generated.contains("Extension = Nunchuk\n") ||
+      !generated.contains("Options/Sideways Wiimote = False\n") ||
       !generated.contains("[Wiimote2]\nDevice = SDL/1/Second Controller\n") ||
-      generated.contains("Nunchuk/")) {
+      generated.contains("Extension = None")) {
     return 5;
   }
 #endif
