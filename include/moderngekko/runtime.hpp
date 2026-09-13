@@ -107,6 +107,8 @@ struct GraphicsSettings
 {
   std::string backend;
   std::optional<int> internal_resolution_scale;
+  // GalaxyPad's mobile setting: 0=4:3, 1=16:9, 2=fill/stretch.
+  std::optional<int> aspect_ratio_mode;
 };
 
 struct AudioSettings

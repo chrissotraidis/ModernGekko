@@ -510,6 +510,16 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   if (impl->config.graphics.internal_resolution_scale)
     Config::SetBase(Config::GFX_EFB_SCALE,
                     *impl->config.graphics.internal_resolution_scale);
+  if (impl->config.graphics.aspect_ratio_mode) {
+    AspectMode aspect = AspectMode::Auto;
+    switch (*impl->config.graphics.aspect_ratio_mode) {
+    case 0: aspect = AspectMode::ForceStandard; break;
+    case 1: aspect = AspectMode::ForceWide; break;
+    case 2: aspect = AspectMode::Stretch; break;
+    default: break;
+    }
+    Config::SetBase(Config::GFX_ASPECT_RATIO, aspect);
+  }
   Config::SetBase(Config::GFX_SHADER_CACHE, true);
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
