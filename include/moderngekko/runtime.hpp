@@ -2,6 +2,7 @@
 
 #include "moderngekko/game.hpp"
 #include "moderngekko/module_abi.h"
+#include "moderngekko/mod_abi.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -134,6 +135,9 @@ struct RuntimeConfig
   std::filesystem::path user_directory;
   ModuleSource module;
   std::vector<std::filesystem::path> mod_directories;
+  // App-linked descriptors only; storage/callbacks must outlive the Runtime.
+  // Mutually exclusive with mod_directories. Empty preserves normal loading.
+  std::vector<const ModernGekkoModDesc*> builtin_mods;
   GraphicsSettings graphics;
   AudioSettings audio;
   InputSettings input;

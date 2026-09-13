@@ -367,8 +367,22 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
       "ModernGekko - " + impl->metadata.game_name + " [" +
       impl->metadata.disc_id + "]");
   impl->mods = std::make_unique<ModManager>();
-  const ModLoadReport mod_report = impl->mods->LoadDirectories(
-      impl->config.mod_directories, impl->metadata.disc_id);
+  ModLoadReport mod_report;
+  if (impl->config.builtin_mods.empty()) {
+    mod_report = impl->mods->LoadDirectories(
+        impl->config.mod_directories, impl->metadata.disc_id);
+  } else {
+    if (!impl->config.mod_directories.empty())
+      return {{}, RuntimeError{RuntimeErrorCode::ModuleRejected,
+                               "Built-in mods cannot be mixed with mod directories"}};
+    std::vector<ModSource> sources;
+    for (const auto* descriptor : impl->config.builtin_mods)
+      sources.push_back(ModSource::AttachedDescriptor(descriptor, "built-in"));
+    mod_report = impl->mods->Load(sources, impl->metadata.disc_id);
+    if (!mod_report)
+      return {{}, RuntimeError{RuntimeErrorCode::ModuleRejected,
+                               "Built-in mod rejected: " + mod_report.issues.front().message}};
+  }
   for (const ModLoadIssue &issue : mod_report.issues)
     std::fprintf(stderr, "mod rejected: %s: %s\n", issue.source.c_str(),
                  issue.message.c_str());
