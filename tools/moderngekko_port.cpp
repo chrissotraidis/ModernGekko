@@ -226,6 +226,7 @@ bool ApplyGalaxyFprf(const fs::path& generated)
 
 #include "galaxypad_thp_policy.inc"
 #include "galaxypad_dcbz_policy.inc"
+#include "galaxypad_two_range_policy.inc"
 
 std::string Trim(std::string value)
 {
@@ -652,6 +653,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
       options.backend, options.c_chunk_instructions);
   const std::string dcbz_policy = GalaxyDcbzPolicy(game.disc_id, game.dol_sha256,
       options.backend, options.c_chunk_instructions);
+  const std::string two_range_policy = GalaxyTwoRangePolicy(game.disc_id, game.dol_sha256,
+      options.backend, options.c_chunk_instructions, options.dispatch_lookup);
   std::ostringstream source_fingerprint;
   source_fingerprint << std::hex << std::setfill('0') << std::setw(16)
                      << Fnv1a(*module_sources);
@@ -664,6 +667,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
       "|dolrecomp_binary=" + *dolrecomp_hash +
       "|module_sources=" + source_fingerprint.str() + "|fprf_policy=" + fprf_policy +
       "|thp_policy=" + thp_policy +
+      "|two_range_policy=" + two_range_policy +
       (dcbz_policy == "none" ? "" : "|dcbz_policy=" + dcbz_policy);
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
@@ -693,6 +697,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
              << "fprf_policy=" << fprf_policy << '\n'
              << "thp_policy=" << thp_policy << '\n'
              << "dcbz_policy=" << dcbz_policy << '\n'
+             << "two_range_policy=" << two_range_policy << '\n'
              << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
              << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
              << "compiler=" << compiler_identity << '\n'
@@ -763,6 +768,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   if (thp_policy != "none" && !ApplyGalaxyThp(generated))
     return std::nullopt;
   if (dcbz_policy != "none" && !ApplyGalaxyDcbz(generated))
+    return std::nullopt;
+  if (two_range_policy != "none" && !ApplyGalaxyTwoRange(generated))
     return std::nullopt;
   if (emitted_header.filename() != "generated.h")
     fs::copy_file(emitted_header, generated / "generated.h", fs::copy_options::overwrite_existing);
