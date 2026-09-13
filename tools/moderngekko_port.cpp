@@ -93,6 +93,51 @@ std::uint64_t Fnv1a(std::string_view value)
   return hash;
 }
 
+// Content identity, not mtimes or absolute checkout paths. Missing inputs fail
+// closed before cache lookup. Generated game code has its own existing key.
+std::optional<std::string> ModuleSourceIdentity(const fs::path& dolphin)
+{
+  try
+  {
+    std::vector<fs::path> files;
+    for (const auto* directory : {"GXRuntime/src/core", "GXRuntime/include", "module-template"})
+    {
+      const auto base = dolphin / directory;
+      if (!fs::is_directory(base))
+        return std::nullopt;
+      bool found = false;
+      for (const auto& entry : fs::recursive_directory_iterator(base))
+      {
+        if (entry.is_symlink())
+          return std::nullopt;
+        if (entry.is_regular_file())
+        {
+          files.push_back(entry.path().lexically_relative(dolphin));
+          found = true;
+        }
+      }
+      if (!found)
+        return std::nullopt;
+    }
+    files.emplace_back("Source/Core/Core/PowerPC/StaticRecomp/StaticRecompABI.h");
+    std::sort(files.begin(), files.end());
+    std::string identity;
+    for (const auto& relative : files)
+    {
+      const auto hash = moderngekko::HashFileSha256(dolphin / relative);
+      if (!hash)
+        return std::nullopt;
+      const auto name = relative.generic_string();
+      identity += std::to_string(name.size()) + ":" + name + ":" + *hash + "\n";
+    }
+    return identity;
+  }
+  catch (const fs::filesystem_error&)
+  {
+    return std::nullopt;
+  }
+}
+
 std::string Trim(std::string value)
 {
   while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())))
@@ -506,13 +551,23 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   {
     flags = opt == "0" ? "compile:/Od /fp:strict" : "compile:/O2 /fp:strict";
   }
+  const auto module_sources = ModuleSourceIdentity(source_root / "vendor/dolphin");
+  if (!module_sources)
+  {
+    std::cerr << "Module source identity is unavailable; refusing cache lookup\n";
+    return std::nullopt;
+  }
+  std::ostringstream source_fingerprint;
+  source_fingerprint << std::hex << std::setfill('0') << std::setw(16)
+                     << Fnv1a(*module_sources);
   const std::string identity = std::string(RECOMPCORE_REVISION) + "|dolrecomp=" +
       std::string(DOLRECOMP_REVISION) + "|module-abi=" +
       std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) + "|cpu-abi=" +
       std::to_string(MODERNGEKKO_CPU_ABI_VERSION) + "|" + compiler_identity + "|" +
       std::string(architecture) + "|" + flags + "|backend=" + options.backend +
       "|" + codegen_options + "|patches=" + patches.fingerprint +
-      "|dolrecomp_binary=" + *dolrecomp_hash;
+      "|dolrecomp_binary=" + *dolrecomp_hash +
+      "|module_sources=" + source_fingerprint.str();
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
   const std::string cache_key = game.dol_sha256 + "-" + key_tail.str();
@@ -537,6 +592,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
              << "recompcore_revision=" << RECOMPCORE_REVISION << '\n'
              << "dolrecomp_revision=" << DOLRECOMP_REVISION << '\n'
              << "dolrecomp_binary_sha256=" << *dolrecomp_hash << '\n'
+             << "module_sources_fnv1a=" << source_fingerprint.str() << '\n'
              << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
              << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
              << "compiler=" << compiler_identity << '\n'
