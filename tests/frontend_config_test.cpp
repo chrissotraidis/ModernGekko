@@ -21,6 +21,14 @@ int main() {
            std::chrono::steady_clock::now().time_since_epoch().count()));
 
   std::string error;
+  const fs::path default_directory = directory.string() + "-default";
+  const auto defaults =
+      moderngekko::frontend::LoadConfig(default_directory, true);
+  if (!defaults || defaults.resolution != "640x528" ||
+      defaults.dolphin_scale != 1)
+    return 14;
+  fs::remove_all(default_directory);
+
   const std::string controller = "SDL/0/Test Controller";
   if (!moderngekko::frontend::SaveConfig(directory, "1920x1080", false,
                                          controller, &error))
@@ -29,7 +37,11 @@ int main() {
   const auto loaded = moderngekko::frontend::LoadConfig(directory, false);
   if (!loaded || loaded.dolphin_scale != 3 || loaded.show_fps_in_title ||
       loaded.controller != controller ||
+#if defined(__APPLE__)
+      loaded.graphics_backend != "Metal") {
+#else
       loaded.graphics_backend != "Vulkan") {
+#endif
     return 2;
   }
 

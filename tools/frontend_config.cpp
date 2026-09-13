@@ -104,7 +104,7 @@ ConfigResult LoadConfig(const fs::path &user_directory,
   const fs::path path = user_directory / "config.ini";
   if (!fs::exists(path) && create_if_missing) {
     std::string error;
-    if (!SaveConfig(user_directory, "1920x1080", true, {}, &error))
+    if (!SaveConfig(user_directory, "640x528", true, {}, &error))
       return {.error = std::move(error)};
   }
 
