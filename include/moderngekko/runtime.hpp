@@ -74,6 +74,8 @@ struct RuntimeDiagnosticsSnapshot
   std::uint32_t efb_last_x = 0;
   std::uint32_t efb_last_y = 0;
   std::uint32_t efb_last_depth = 0;
+  std::uint64_t efb_frames_with_peeks = 0;
+  std::uint64_t efb_max_peeks_per_frame = 0;
   std::uint64_t input_samples = 0;
   std::uint64_t input_button_samples = 0;
   std::uint64_t input_button_transitions = 0;

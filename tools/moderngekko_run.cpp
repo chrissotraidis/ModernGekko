@@ -441,7 +441,8 @@ int RunMain(int argc, char **argv) {
             << " last_x=" << diagnostics.efb_last_x
             << " last_y=" << diagnostics.efb_last_y
             << " last_depth=0x" << std::hex << diagnostics.efb_last_depth
-            << std::dec << '\n';
+            << std::dec << " frames_with_peeks=" << diagnostics.efb_frames_with_peeks
+            << " max_peeks_per_frame=" << diagnostics.efb_max_peeks_per_frame << '\n';
   std::cout << "[moderngekko] input: samples=" << diagnostics.input_samples
             << " button_samples=" << diagnostics.input_button_samples
             << " transitions=" << diagnostics.input_button_transitions

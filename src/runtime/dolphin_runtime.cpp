@@ -617,6 +617,7 @@ RuntimeRunResult Runtime::Run() {
   });
   m_impl->diagnostics_frame_hook =
       GetVideoEvents().after_frame_event.Register([this](Core::System&) {
+        GalaxyPadDiagnostics::RecordPresentedFrame();
         const Statistics::ThisFrame frame = g_stats.this_frame;
         const auto now = std::chrono::steady_clock::now().time_since_epoch();
         const auto now_ns = static_cast<std::uint64_t>(
@@ -815,6 +816,8 @@ RuntimeDiagnosticsSnapshot Runtime::GetDiagnosticsSnapshot() const {
       .efb_last_x = io.efb_last_x,
       .efb_last_y = io.efb_last_y,
       .efb_last_depth = io.efb_last_depth,
+      .efb_frames_with_peeks = io.efb_frames_with_peeks,
+      .efb_max_peeks_per_frame = io.efb_max_peeks_per_frame,
       .input_samples = io.input_samples,
       .input_button_samples = io.input_button_samples,
       .input_button_transitions = io.input_button_transitions,
