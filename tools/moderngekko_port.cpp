@@ -13,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -136,6 +137,91 @@ std::optional<std::string> ModuleSourceIdentity(const fs::path& dolphin)
   {
     return std::nullopt;
   }
+}
+
+// Tested RMGE01 decoder-only policy. This identifier is part of cache identity.
+std::string GalaxyFprfPolicy(const std::string& disc, const std::string& dol,
+                            const std::string& backend, unsigned chunks)
+{
+  return disc == "RMGE01" &&
+                 dol == "2c680585a8f58e1cc9c5521b579057f12b124ff0ef409e470a57606c50a93c09" &&
+                 backend == "c" && chunks == 1024 ?
+             "rmge01-fprf-119-v1" : "none";
+}
+
+std::optional<std::string> GalaxyFprfTransform(const std::string& source)
+{
+  const std::regex labels(R"(^label_([0-9A-F]{8}):\n)", std::regex::multiline);
+  const std::regex body(
+      R"(    ctx->pc = 0x([0-9A-F]{8})u;\n    // \1: ps_(?:add|sub|mul|madd|msub|nmadd|nmsub)  [^\n]*\n    if \(!ppc_fp_available_inline\(ctx, 0x\1u\)\) return;\n    ppc_ps_(add|sub|mul|madd)_op\(ctx, [0-9, truefals]+\);\n\s*)");
+  struct Label { std::size_t begin, end; unsigned pc; };
+  std::vector<Label> entries;
+  for (auto i = std::sregex_iterator(source.begin(), source.end(), labels);
+       i != std::sregex_iterator(); ++i)
+    entries.push_back({static_cast<std::size_t>(i->position()),
+                       static_cast<std::size_t>(i->position() + i->length()),
+                       static_cast<unsigned>(std::stoul((*i)[1].str(), nullptr, 16))});
+  std::vector<std::pair<std::size_t, std::string>> changes;
+  for (std::size_t i = 0; i + 2 < entries.size(); ++i)
+  {
+    const auto& a = entries[i];
+    const auto& b = entries[i + 1];
+    if (b.pc != a.pc + 4)
+      continue;
+    const auto left = source.substr(a.end, b.begin - a.end);
+    const auto right = source.substr(b.end, entries[i + 2].begin - b.end);
+    std::smatch l, r;
+    if (!std::regex_match(left, l, body) || !std::regex_match(right, r, body) ||
+        std::stoul(l[1].str(), nullptr, 16) != a.pc ||
+        std::stoul(r[1].str(), nullptr, 16) != b.pc)
+      continue;
+    const auto call = "ppc_ps_" + l[2].str() + "_op(";
+    const auto offset = left.find(call);
+    if (offset == std::string::npos)
+      return std::nullopt;
+    changes.emplace_back(a.end + offset, l[2].str());
+  }
+  if (changes.size() != 119)
+    return std::nullopt;
+  std::string result = source;
+  for (auto i = changes.rbegin(); i != changes.rend(); ++i)
+    result.replace(i->first, ("ppc_ps_" + i->second + "_op(").size(),
+                   "galaxypad_deferred_" + i->second + "(");
+  const std::string include = "#include \"../RMGE01.h\"";
+  const auto at = result.find(include);
+  if (at == std::string::npos || result.find(include, at + 1) != std::string::npos)
+    return std::nullopt;
+  result.insert(at + include.size(),
+      "\nvoid galaxypad_deferred_add(CPUState* cpu, u8 d, u8 a, u8 b);"
+      "\nvoid galaxypad_deferred_sub(CPUState* cpu, u8 d, u8 a, u8 b);"
+      "\nvoid galaxypad_deferred_mul(CPUState* cpu, u8 d, u8 a, u8 c);"
+      "\nvoid galaxypad_deferred_madd(CPUState* cpu, u8 d, u8 a, u8 c, u8 b,\n"
+      "                    bool subtract, bool negative);");
+  return result;
+}
+
+bool ApplyGalaxyFprf(const fs::path& generated)
+{
+  const auto chunk = generated / "chunks/chunk_1102_text1_804520A0.c";
+  const auto hash = moderngekko::HashFileSha256(chunk);
+  if (!hash || *hash != "2dc3b915db7bd33c84a0481499fefd0ee91a201bc20cb6540248caf06729d539")
+  {
+    std::cerr << "Unexpected RMGE01 FPRF source identity; refusing build\n";
+    return false;
+  }
+  std::ifstream input(chunk, std::ios::binary);
+  const std::string source((std::istreambuf_iterator<char>(input)), {});
+  const auto transformed = GalaxyFprfTransform(source);
+  if (!transformed)
+  {
+    std::cerr << "RMGE01 FPRF region validation failed\n";
+    return false;
+  }
+  // This is newly generated, disposable build output, never a vendor input.
+  std::ofstream output(chunk, std::ios::binary | std::ios::trunc);
+  output << *transformed;
+  output.close();
+  return static_cast<bool>(output);
 }
 
 std::string Trim(std::string value)
@@ -557,6 +643,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     std::cerr << "Module source identity is unavailable; refusing cache lookup\n";
     return std::nullopt;
   }
+  const std::string fprf_policy = GalaxyFprfPolicy(game.disc_id, game.dol_sha256,
+      options.backend, options.c_chunk_instructions);
   std::ostringstream source_fingerprint;
   source_fingerprint << std::hex << std::setfill('0') << std::setw(16)
                      << Fnv1a(*module_sources);
@@ -567,7 +655,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
       std::string(architecture) + "|" + flags + "|backend=" + options.backend +
       "|" + codegen_options + "|patches=" + patches.fingerprint +
       "|dolrecomp_binary=" + *dolrecomp_hash +
-      "|module_sources=" + source_fingerprint.str();
+      "|module_sources=" + source_fingerprint.str() + "|fprf_policy=" + fprf_policy;
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
   const std::string cache_key = game.dol_sha256 + "-" + key_tail.str();
@@ -593,6 +681,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
              << "dolrecomp_revision=" << DOLRECOMP_REVISION << '\n'
              << "dolrecomp_binary_sha256=" << *dolrecomp_hash << '\n'
              << "module_sources_fnv1a=" << source_fingerprint.str() << '\n'
+             << "fprf_policy=" << fprf_policy << '\n'
              << "module_abi=" << MODERNGEKKO_MODULE_ABI_VERSION << '\n'
              << "cpu_abi=" << MODERNGEKKO_CPU_ABI_VERSION << '\n'
              << "compiler=" << compiler_identity << '\n'
@@ -658,6 +747,8 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     std::cerr << "DolRecomp did not produce " << emitted_header << '\n';
     return std::nullopt;
   }
+  if (fprf_policy != "none" && !ApplyGalaxyFprf(generated))
+    return std::nullopt;
   if (emitted_header.filename() != "generated.h")
     fs::copy_file(emitted_header, generated / "generated.h", fs::copy_options::overwrite_existing);
   fs::copy_file(recomp_dol, generated / "main.dol", fs::copy_options::overwrite_existing);
