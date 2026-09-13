@@ -4,6 +4,7 @@
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
 #include "Common/GalaxyPadDiagnostics.h"
+#include "Common/completion-session.h"
 #include "Common/IniFile.h"
 #include "Common/HookableEvent.h"
 #include "Common/Logging/Log.h"
@@ -241,6 +242,10 @@ struct Runtime::Impl {
     if (result != galaxypad::ViTimingRecorder::Result::Disabled)
       std::fprintf(stderr, "[moderngekko] vi-timing: export_result=%d (1=saved,2=open_failed,3=write_failed)\n",
                    static_cast<int>(result));
+    const auto completion = galaxypad::completion_recorder.FlushAfterJoin();
+    if (completion != galaxypad::CompletionRecorder::Result::Disabled)
+      std::fprintf(stderr, "[moderngekko] completion-timing: export_result=%d (1=saved,2=open_failed,3=write_failed)\n",
+                   static_cast<int>(completion));
   }
 
   bool ui_initialized = false;
@@ -584,6 +589,7 @@ RuntimeRunResult Runtime::Run() {
 
   GalaxyPadDiagnostics::Reset();
   m_impl->vi_timing.Configure(std::getenv("GALAXYPAD_VI_TIMING"));
+  galaxypad::completion_recorder.Configure(std::getenv("GALAXYPAD_COMPLETION_TIMING"));
   Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().Configure(
       m_impl->vi_timing.Enabled());
   m_impl->diagnostic_frame_count = 0;
