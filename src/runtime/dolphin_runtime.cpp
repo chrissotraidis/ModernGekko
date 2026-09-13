@@ -243,8 +243,8 @@ struct Runtime::Impl {
       std::fprintf(stderr, "[moderngekko] vi-timing: export_result=%d (1=saved,2=open_failed,3=write_failed)\n",
                    static_cast<int>(result));
     const auto completion = galaxypad::completion_recorder.FlushAfterJoin();
-    if (completion != galaxypad::CompletionRecorder::Result::Disabled)
-      std::fprintf(stderr, "[moderngekko] completion-timing: export_result=%d (1=saved,2=open_failed,3=write_failed)\n",
+    if (completion != galaxypad::CompletionFlightRecorder::Result::Disabled)
+      std::fprintf(stderr, "[moderngekko] completion-timing: export_result=%d (1=saved,2=open_failed,3=write_failed,4=invalid_config)\n",
                    static_cast<int>(completion));
   }
 
@@ -589,9 +589,24 @@ RuntimeRunResult Runtime::Run() {
 
   GalaxyPadDiagnostics::Reset();
   m_impl->vi_timing.Configure(std::getenv("GALAXYPAD_VI_TIMING"));
-  galaxypad::completion_recorder.Configure(std::getenv("GALAXYPAD_COMPLETION_TIMING"));
+  const char* completion_path = std::getenv("GALAXYPAD_COMPLETION_TIMING");
+  std::uint64_t completion_deadline = 0;
+  constexpr std::uint64_t completion_threshold = 20'000'000;
+  bool completion_config_valid = true;
+  if (completion_path && *completion_path) {
+    const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    completion_config_valid = galaxypad::CompletionArmDeadline(
+        std::getenv("GALAXYPAD_COMPLETION_ARM_DELAY_MS"), now, completion_deadline);
+    std::fprintf(stderr, "[moderngekko] completion-arm: valid=%u not_before_ns=%llu threshold_ns=%llu\n",
+                 completion_config_valid ? 1u : 0u,
+                 static_cast<unsigned long long>(completion_deadline),
+                 static_cast<unsigned long long>(completion_threshold));
+  }
+  galaxypad::completion_recorder.Configure(completion_path, completion_deadline,
+      completion_config_valid ? completion_threshold : 0);
   Core::System::GetInstance().GetPerfMetrics().GetCPUIdleWaitTiming().Configure(
-      m_impl->vi_timing.Enabled());
+      m_impl->vi_timing.Enabled() || galaxypad::completion_recorder.Enabled());
   m_impl->diagnostic_frame_count = 0;
   m_impl->diagnostic_first_frame_ns = std::numeric_limits<std::uint64_t>::max();
   m_impl->diagnostic_last_frame_ns = 0;
