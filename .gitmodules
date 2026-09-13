@@ -1,5 +1,5 @@
 [submodule "vendor/dolphin"]
 	path = vendor/dolphin
-	url = https://github.com/ExpansionPak/RecompCore.git
-	branch = moderngekko-vendor
+	url = https://github.com/chrissotraidis/RecompCore.git
+	branch = codex/galaxypad-integration
 	shallow = true
