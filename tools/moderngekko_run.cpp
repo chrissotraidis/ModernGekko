@@ -403,6 +403,40 @@ int RunMain(int argc, char **argv) {
             << " textures_alive=" << diagnostics.textures_alive
             << " vertex_shaders=" << diagnostics.vertex_shaders_created
             << " pixel_shaders=" << diagnostics.pixel_shaders_created << '\n';
+  std::cout << "[moderngekko] audio: callbacks=" << diagnostics.audio_callbacks
+            << " frames=" << diagnostics.audio_frames
+            << " nonzero_frames=" << diagnostics.audio_nonzero_frames
+            << " peak=" << diagnostics.audio_peak
+            << " started=" << diagnostics.audio_started
+            << " stopped=" << diagnostics.audio_stopped
+            << " drained=" << diagnostics.audio_drained
+            << " errors=" << diagnostics.audio_errors << '\n';
+  std::cout << "[moderngekko] dma: enqueues=" << diagnostics.dma_enqueues
+            << " underruns=" << diagnostics.dma_underruns
+            << " backlog_drops=" << diagnostics.dma_backlog_drops
+            << " queue_full_drops=" << diagnostics.dma_queue_full_drops
+            << " queue_min=" << diagnostics.dma_queue_min
+            << " queue_max=" << diagnostics.dma_queue_max
+            << " producer_max_gap_ns=" << diagnostics.dma_producer_max_gap_ns
+            << " first_underrun_enqueue=" << diagnostics.dma_first_underrun_enqueue
+            << " last_underrun_enqueue=" << diagnostics.dma_last_underrun_enqueue
+            << " first_backlog_enqueue=" << diagnostics.dma_first_backlog_enqueue
+            << " last_backlog_enqueue=" << diagnostics.dma_last_backlog_enqueue << '\n';
+  std::cout << "[moderngekko] efb: color_peeks=" << diagnostics.efb_color_peeks
+            << " depth_peeks=" << diagnostics.efb_depth_peeks
+            << " total_ns=" << diagnostics.efb_peek_ns
+            << " max_ns=" << diagnostics.efb_max_peek_ns
+            << " last_x=" << diagnostics.efb_last_x
+            << " last_y=" << diagnostics.efb_last_y
+            << " last_depth=0x" << std::hex << diagnostics.efb_last_depth
+            << std::dec << '\n';
+  std::cout << "[moderngekko] input: samples=" << diagnostics.input_samples
+            << " button_samples=" << diagnostics.input_button_samples
+            << " transitions=" << diagnostics.input_button_transitions
+            << " ir_visible_samples=" << diagnostics.input_ir_visible_samples
+            << " last_buttons=0x" << std::hex << diagnostics.input_last_buttons
+            << std::dec << " last_ir_x=" << diagnostics.input_last_ir_x
+            << " last_ir_y=" << diagnostics.input_last_ir_y << '\n';
   signal_watcher.request_stop();
   if (result.error) {
     std::cerr << "runtime failed: " << result.error->message << '\n';

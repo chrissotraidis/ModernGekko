@@ -2,6 +2,7 @@
 
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
+#include "Common/GalaxyPadDiagnostics.h"
 #include "Common/IniFile.h"
 #include "Common/HookableEvent.h"
 #include "Common/Logging/Log.h"
@@ -542,6 +543,8 @@ RuntimeRunResult Runtime::Run() {
             RuntimeError{RuntimeErrorCode::InvalidState,
                          "runtime is already running"}};
 
+  GalaxyPadDiagnostics::Reset();
+
   std::unique_ptr<BootParameters> boot;
   {
     std::lock_guard lock(s_runtime_mutex);
@@ -697,6 +700,7 @@ void Runtime::SetGMSE01HeatwaveSuppressed(bool suppressed) {
 }
 
 RuntimeDiagnosticsSnapshot Runtime::GetDiagnosticsSnapshot() const {
+  const GalaxyPadDiagnostics::Snapshot io = GalaxyPadDiagnostics::GetSnapshot();
   return {
       .frame_count = m_impl->diagnostic_frame_count.load(std::memory_order_relaxed),
       .projection_hash = m_impl->diagnostic_projection_hash.load(std::memory_order_relaxed),
@@ -714,6 +718,39 @@ RuntimeDiagnosticsSnapshot Runtime::GetDiagnosticsSnapshot() const {
       .pixel_shaders_created =
           m_impl->diagnostic_pixel_shaders_created.load(std::memory_order_relaxed),
       .scissor_count = m_impl->diagnostic_scissor_count.load(std::memory_order_relaxed),
+      .audio_callbacks = io.audio_callbacks,
+      .audio_frames = io.audio_frames,
+      .audio_nonzero_frames = io.audio_nonzero_frames,
+      .audio_peak = io.audio_peak,
+      .audio_started = io.audio_started,
+      .audio_stopped = io.audio_stopped,
+      .audio_drained = io.audio_drained,
+      .audio_errors = io.audio_errors,
+      .dma_enqueues = io.dma_enqueues,
+      .dma_underruns = io.dma_underruns,
+      .dma_backlog_drops = io.dma_backlog_drops,
+      .dma_queue_full_drops = io.dma_queue_full_drops,
+      .dma_queue_min = io.dma_queue_min,
+      .dma_queue_max = io.dma_queue_max,
+      .dma_producer_max_gap_ns = io.dma_producer_max_gap_ns,
+      .dma_first_underrun_enqueue = io.dma_first_underrun_enqueue,
+      .dma_last_underrun_enqueue = io.dma_last_underrun_enqueue,
+      .dma_first_backlog_enqueue = io.dma_first_backlog_enqueue,
+      .dma_last_backlog_enqueue = io.dma_last_backlog_enqueue,
+      .efb_color_peeks = io.efb_color_peeks,
+      .efb_depth_peeks = io.efb_depth_peeks,
+      .efb_peek_ns = io.efb_peek_ns,
+      .efb_max_peek_ns = io.efb_max_peek_ns,
+      .efb_last_x = io.efb_last_x,
+      .efb_last_y = io.efb_last_y,
+      .efb_last_depth = io.efb_last_depth,
+      .input_samples = io.input_samples,
+      .input_button_samples = io.input_button_samples,
+      .input_button_transitions = io.input_button_transitions,
+      .input_ir_visible_samples = io.input_ir_visible_samples,
+      .input_last_buttons = io.input_last_buttons,
+      .input_last_ir_x = io.input_last_ir_x,
+      .input_last_ir_y = io.input_last_ir_y,
   };
 }
 } // namespace moderngekko
