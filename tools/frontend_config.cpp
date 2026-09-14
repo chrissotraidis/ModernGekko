@@ -40,6 +40,10 @@ std::string NormalizeGraphicsBackend(std::string value) {
     return "Vulkan";
   if (lower == "opengl" || lower == "ogl")
     return "OGL";
+#if defined(__APPLE__)
+  if (lower == "metal")
+    return "Metal";
+#endif
   return {};
 }
 
@@ -84,11 +88,19 @@ const std::vector<ResolutionOption> &SupportedResolutions() {
 }
 
 const std::vector<GraphicsBackendOption> &SupportedGraphicsBackends() {
+#if defined(__APPLE__)
+  static const std::vector<GraphicsBackendOption> backends = {{"Metal", "Metal"}};
+#else
   static const std::vector<GraphicsBackendOption> backends = {
       {"Vulkan", "Vulkan"},
       {"OpenGL", "OGL"},
   };
+#endif
   return backends;
+}
+
+bool ControllerRequiresBackgroundInput(std::string_view controller) {
+  return controller.starts_with("Pipe/");
 }
 
 ConfigResult LoadConfig(const fs::path &user_directory,
@@ -372,8 +384,64 @@ bool GenerateControllerConfig(const fs::path &user_directory,
     output << "[GCPad" << i + 1 << "]\n";
     if (i >= controllers.size())
       continue;
-    output << "Device = " << controllers[i] << '\n'
-           << "Buttons/A = `Button A`\n"
+    output << "Device = " << controllers[i] << '\n';
+    // Match MeleePad's packaged keyboard profile for explicit netplay selection.
+    if (controllers[i] == "Quartz/0/Keyboard & Mouse") {
+      output << "Buttons/A = J\n"
+                "Buttons/B = K\n"
+                "Buttons/X = U | Space\n"
+                "Buttons/Y = I\n"
+                "Buttons/Z = O\n"
+                "Buttons/Start = Return\n"
+                "Main Stick/Up = W\n"
+                "Main Stick/Down = S\n"
+                "Main Stick/Left = A\n"
+                "Main Stick/Right = D\n"
+                "Main Stick/Calibration = 100.00\n"
+                "C-Stick/Up = `Up Arrow`\n"
+                "C-Stick/Down = `Down Arrow`\n"
+                "C-Stick/Left = `Left Arrow`\n"
+                "C-Stick/Right = `Right Arrow`\n"
+                "C-Stick/Calibration = 100.00\n"
+                "Triggers/L = Q\n"
+                "Triggers/R = E\n"
+                "Triggers/L-Analog = Q\n"
+                "Triggers/R-Analog = E\n"
+                "D-Pad/Up = T\n"
+                "D-Pad/Down = G\n"
+                "D-Pad/Left = F\n"
+                "D-Pad/Right = H\n";
+      continue;
+    }
+    if (ControllerRequiresBackgroundInput(controllers[i])) {
+      output << "Buttons/A = `Button A`\n"
+                "Buttons/B = `Button B`\n"
+                "Buttons/X = `Button X`\n"
+                "Buttons/Y = `Button Y`\n"
+                "Buttons/Z = `Button Z`\n"
+                "Buttons/Start = `Button START`\n"
+                "Main Stick/Up = `Axis MAIN Y -`\n"
+                "Main Stick/Down = `Axis MAIN Y +`\n"
+                "Main Stick/Left = `Axis MAIN X -`\n"
+                "Main Stick/Right = `Axis MAIN X +`\n"
+                "Main Stick/Calibration = 100.00\n"
+                "C-Stick/Up = `Axis C Y -`\n"
+                "C-Stick/Down = `Axis C Y +`\n"
+                "C-Stick/Left = `Axis C X -`\n"
+                "C-Stick/Right = `Axis C X +`\n"
+                "C-Stick/Calibration = 100.00\n"
+                "Triggers/L = `Button L`\n"
+                "Triggers/R = `Button R`\n"
+                "Triggers/L-Analog = `Axis L +`\n"
+                "Triggers/R-Analog = `Axis R +`\n"
+                "D-Pad/Up = `Button D_UP`\n"
+                "D-Pad/Down = `Button D_DOWN`\n"
+                "D-Pad/Left = `Button D_LEFT`\n"
+                "D-Pad/Right = `Button D_RIGHT`\n"
+                "Options/Always Connected = True\n";
+      continue;
+    }
+    output << "Buttons/A = `Button A`\n"
               "Buttons/B = `Button B`\n"
               "Buttons/X = `Button X`\n"
               "Buttons/Y = `Button Y`\n"

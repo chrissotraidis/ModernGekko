@@ -46,6 +46,10 @@ option(MODERNGEKKO_PORTABLE_DEFAULT_GAME
        "Read and write default-game.txt beside branded executables" OFF)
 option(MODERNGEKKO_GAMECUBE_CONTROLLERS
        "Generate GameCube controller profiles instead of Wii Remote profiles" OFF)
+option(MODERNGEKKO_APP_BUNDLE
+       "Resolve Apple system data from Contents/Resources" OFF)
+option(MODERNGEKKO_MACOS_METAL_DISPLAY_SYNC
+       "Keep branded macOS Metal presentation synchronized to the display" OFF)
 set(MODERNGEKKO_LOG_FILENAME "ModernGekko.log" CACHE STRING
     "Runner log filename")
 set(MODERNGEKKO_DISC_PREPARER_OUTPUT_NAME "" CACHE STRING
@@ -91,6 +95,31 @@ if(MODERNGEKKO_FRONTEND_SDK)
 endif()
 
 if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
+    add_library(moderngekko_netplay_session STATIC
+        tools/netplay_compatibility.cpp
+        tools/netplay_session_core.cpp)
+    target_include_directories(moderngekko_netplay_session
+        PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include")
+    target_link_libraries(moderngekko_netplay_session
+        PUBLIC ModernGekko::Runtime core uicommon)
+    target_compile_features(moderngekko_netplay_session PUBLIC cxx_std_23)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        target_compile_definitions(moderngekko_netplay_session PRIVATE _ARCH_64=1)
+    else()
+        target_compile_definitions(moderngekko_netplay_session PRIVATE _ARCH_32=1)
+    endif()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
+        target_compile_definitions(moderngekko_netplay_session PRIVATE _M_X86_64=1)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        target_compile_definitions(moderngekko_netplay_session PRIVATE _M_ARM_64=1)
+    else()
+        target_compile_definitions(moderngekko_netplay_session PRIVATE _M_GENERIC=1)
+    endif()
+
     set(MODERNGEKKO_ENABLE_IMGUI_LAUNCHER ON CACHE BOOL "" FORCE)
     set(ENABLE_QT OFF CACHE BOOL "" FORCE)
     set(ENABLE_NOGUI OFF CACHE BOOL "" FORCE)
@@ -104,8 +133,10 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(USE_UPNP OFF CACHE BOOL "" FORCE)
     set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
     set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
-    # Cubeb is Dolphin's only audio backend on macOS
-    if(APPLE OR WIN32)
+    # Cubeb is Dolphin's only audio backend on macOS; its audiounit backend
+    # uses macOS-only CoreAudio APIs, so iOS builds (SunPad provides its own
+    # AVAudioEngine backend) keep cubeb off.
+    if((APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS") OR WIN32)
         set(ENABLE_CUBEB ON CACHE BOOL "" FORCE)
     else()
         set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
@@ -119,9 +150,18 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     if(APPLE)
         set(SDL_HIDAPI OFF CACHE BOOL "" FORCE)
     endif()
-    set(LINUX_LOCAL_DEV ON CACHE BOOL "" FORCE)
+    if(APPLE AND MODERNGEKKO_APP_BUNDLE)
+        set(LINUX_LOCAL_DEV OFF CACHE BOOL "" FORCE)
+    else()
+        set(LINUX_LOCAL_DEV ON CACHE BOOL "" FORCE)
+    endif()
     set(DISTRIBUTOR "ModernGekko" CACHE STRING "" FORCE)
     add_subdirectory(vendor/dolphin EXCLUDE_FROM_ALL)
+    if(APPLE AND NOT CMAKE_SYSTEM_NAME STREQUAL "iOS" AND
+       MODERNGEKKO_MACOS_METAL_DISPLAY_SYNC)
+        target_compile_definitions(videometal PRIVATE
+            MODERNGEKKO_MACOS_METAL_DISPLAY_SYNC=1)
+    endif()
     target_sources(core PRIVATE
         vendor/dolphin/GXRuntime/src/core/cpu_exception.c)
     target_include_directories(core PRIVATE
@@ -245,7 +285,15 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformWin32.cpp)
         target_link_libraries(moderngekko PRIVATE dwmapi)
     endif()
-    if(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        # SunPad's CAMetalLayer platform for iOS (no macOS windowing APIs)
+        target_sources(moderngekko PRIVATE
+            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformIOS.mm)
+        set_source_files_properties(
+            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformIOS.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_compile_definitions(moderngekko PRIVATE MODERNGEKKO_HAVE_IOS=1)
+    elseif(APPLE)
         # Dolphin's windowed backend for macOS
         target_sources(moderngekko PRIVATE
             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformMacos.mm)
@@ -405,7 +453,6 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     endif()
     add_executable(moderngekko-run
         tools/moderngekko_run.cpp
-        tools/netplay_compatibility.cpp
         tools/netplay_session.cpp
         tools/frontend_config.cpp
         tools/dol_patch.cpp
@@ -438,10 +485,11 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
             "${_moderngekko_sdk_lib}")
     endif()
     target_link_libraries(moderngekko-run PRIVATE
-        ModernGekko::Runtime core uicommon imgui ${_moderngekko_sdl_target})
+        moderngekko_netplay_session imgui ${_moderngekko_sdl_target})
     set_target_properties(moderngekko-run PROPERTIES
         OUTPUT_NAME "${MODERNGEKKO_RUNNER_OUTPUT_NAME}")
     target_compile_definitions(moderngekko-run PRIVATE
+        MODERNGEKKO_FRONTEND_NAME="${MODERNGEKKO_FRONTEND_NAME}"
         MODERNGEKKO_RUNNER_NAME="${MODERNGEKKO_RUNNER_OUTPUT_NAME}"
         MODERNGEKKO_USER_DIRECTORY_NAME="${MODERNGEKKO_USER_DIRECTORY_NAME}")
     if(MODERNGEKKO_DEFAULT_WINDOW_TITLE)
@@ -693,11 +741,44 @@ if(BUILD_TESTING)
                 ModernGekko::Runtime core uicommon)
         endif()
         add_test(NAME moderngekko.netplay_protocol COMMAND moderngekko_netplay_protocol_test)
+
+        add_executable(moderngekko_netplay_session_test
+            tests/netplay_session_test.cpp)
+        target_include_directories(moderngekko_netplay_session_test PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
+            "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/GXRuntime/include")
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            target_compile_definitions(moderngekko_netplay_session_test PRIVATE _ARCH_64=1)
+        else()
+            target_compile_definitions(moderngekko_netplay_session_test PRIVATE _ARCH_32=1)
+        endif()
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "x64|x86_64|amd64|AMD64")
+            target_compile_definitions(moderngekko_netplay_session_test PRIVATE _M_X86_64=1)
+        elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+            target_compile_definitions(moderngekko_netplay_session_test PRIVATE _M_ARM_64=1)
+        else()
+            target_compile_definitions(moderngekko_netplay_session_test PRIVATE _M_GENERIC=1)
+        endif()
+        target_link_libraries(moderngekko_netplay_session_test PRIVATE
+            moderngekko_netplay_session)
+        add_test(NAME moderngekko.netplay_session COMMAND moderngekko_netplay_session_test)
     endif()
 
     add_executable(moderngekko_game_inspect_test tests/game_inspect_test.cpp)
     target_link_libraries(moderngekko_game_inspect_test PRIVATE ModernGekko::LegacyRuntime)
     add_test(NAME moderngekko.game_inspect COMMAND moderngekko_game_inspect_test)
+
+    add_executable(moderngekko_memory_watcher_utils_test
+        tests/memory_watcher_utils_test.cpp
+    )
+    target_include_directories(moderngekko_memory_watcher_utils_test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/dolphin/Source/Core"
+    )
+    target_compile_features(moderngekko_memory_watcher_utils_test PRIVATE cxx_std_20)
+    add_test(NAME moderngekko.memory_watcher_utils
+             COMMAND moderngekko_memory_watcher_utils_test)
 
     add_executable(moderngekko_module_abi_test
         tests/module_abi_test.c

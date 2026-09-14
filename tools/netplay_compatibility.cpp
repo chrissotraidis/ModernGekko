@@ -141,7 +141,7 @@ std::string CompatibilityFingerprint(const RuntimeConfig &config,
       module = "rejected";
     }
   }
-  return "moderngekko-netplay-8|" + Common::GetScmRevGitStr() + "|" +
+  return "moderngekko-netplay-10|" + Common::GetScmRevGitStr() + "|" +
          game.disc_id + "|" + game.dol_sha256 + "|" + game.rel_sha256 + "|" +
          game.assets_sha256 + "|" +
          std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) + "|" +

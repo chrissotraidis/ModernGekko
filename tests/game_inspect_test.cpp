@@ -18,6 +18,7 @@ int main()
   std::array<unsigned char, 0x60> boot{};
   const char id[] = "TEST01";
   std::copy_n(id, 6, boot.begin());
+  boot[7] = 2;
   boot[0x18] = 0x5d; boot[0x19] = 0x1c; boot[0x1a] = 0x9e; boot[0x1b] = 0xa3;
   const char name[] = "Synthetic Test Game";
   std::copy_n(name, sizeof(name), boot.begin() + 0x20);
@@ -36,6 +37,7 @@ int main()
   fs::remove_all(root);
   if (!result || result.metadata->disc_id != "TEST01" ||
       result.metadata->game_name != "Synthetic Test Game" ||
+      result.metadata->revision != 2 ||
       result.metadata->platform != moderngekko::GamePlatform::Wii ||
       result.metadata->entry_point != 0x80003100u ||
       result.metadata->dol_sha256 !=

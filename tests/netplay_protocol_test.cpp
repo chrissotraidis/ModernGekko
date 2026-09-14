@@ -3,6 +3,7 @@
 #include "Core/HW/WiimoteEmu/DesiredWiimoteState.h"
 #include "Core/IOS/FS/FileSystem.h"
 #include "Core/NetPlay/NetPlayClient.h"
+#include "Core/NetPlay/NetPlayCommon.h"
 #include "Core/NetPlay/NetPlayServer.h"
 #include "UICommon/UICommon.h"
 #include "moderngekko/cpu_state.h"
@@ -149,6 +150,49 @@ bool WaitFor(const auto &condition) {
 }
 
 int main() {
+  NetPlay::CanonicalStateSnapshot canonical{
+      .sequence = 60,
+      .guest_pc = 0x80348814,
+      .timebase = 1000,
+      .state_hash = 1,
+      .integer_state_hash = 2,
+      .fpr_state_hash = 3,
+      .paired_state_hash = 4,
+      .ram_hash = 5,
+  };
+  canonical.ram_region_hashes.fill(6);
+  if (!NetPlay::CanonicalStateMatches(canonical, canonical))
+    return 20;
+  auto changed = canonical;
+  changed.integer_state_hash ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 21;
+  changed = canonical;
+  changed.fpr_state_hash ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 22;
+  changed = canonical;
+  changed.paired_state_hash ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 23;
+  changed = canonical;
+  changed.timebase ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 24;
+  changed = canonical;
+  changed.ram_hash ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 25;
+  changed = canonical;
+  changed.ram_region_hashes[3] ^= 1;
+  if (NetPlay::CanonicalStateMatches(canonical, changed))
+    return 26;
+  if (NetPlay::CanonicalRamFirstDifferingRegion(canonical, changed) != 3)
+    return 27;
+  if (NetPlay::CanonicalRamFirstDifferingRegion(canonical, canonical) !=
+      NetPlay::CANONICAL_RAM_REGION_COUNT)
+    return 28;
+
   moderngekko::GameMetadata metadata;
   metadata.disc_id = "TEST01";
   metadata.dol_sha256 = "dol";
@@ -205,6 +249,7 @@ int main() {
       0, false, &host_ui, NetPlay::NetTraversalConfig{});
   if (!server->is_connected)
     return 1;
+  server->SetControllerFamily(NetPlay::ControllerFamily::WiiRemote);
   std::jthread lobby_observer([&](std::stop_token stop) {
     while (!stop.stop_requested()) {
       static_cast<void>(server->CanStart());
@@ -285,6 +330,95 @@ int main() {
   first.reset();
   lobby_observer.request_stop();
   lobby_observer.join();
+  server.reset();
+
+  NetPlay::SetCompatibilityFingerprint("matching-build");
+  server = std::make_unique<NetPlay::NetPlayServer>(
+      0, false, &host_ui, NetPlay::NetTraversalConfig{});
+  if (!server->is_connected)
+    return 19;
+  first = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &first_ui, "GameCube First",
+      NetPlay::NetTraversalConfig{}, 3);
+  if (!first->IsConnected() ||
+      !WaitFor([&] { return first->GetAssignedControllerCount() == 3; }) ||
+      !WaitFor([&] {
+        const NetPlay::PadMappingArray mapping = server->GetPadMapping();
+        return std::ranges::count(mapping, first->GetLocalPlayerId()) == 3;
+      }))
+    return 20;
+  second = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &second_ui, "GameCube Second",
+      NetPlay::NetTraversalConfig{}, 2);
+  if (!second->IsConnected() ||
+      !WaitFor([&] { return second->GetAssignedControllerCount() == 1; }) ||
+      !WaitFor([&] {
+        const NetPlay::PadMappingArray mapping = server->GetPadMapping();
+        return std::ranges::count(mapping, first->GetLocalPlayerId()) == 3 &&
+               std::ranges::count(mapping, second->GetLocalPlayerId()) == 1;
+      }))
+    return 21;
+
+  GCPadStatus sent_pad{};
+  sent_pad.button = 0xa55a;
+  sent_pad.analogA = 0x11;
+  sent_pad.analogB = 0x22;
+  sent_pad.stickX = 0x33;
+  sent_pad.stickY = 0x44;
+  sent_pad.substickX = 0x55;
+  sent_pad.substickY = 0x66;
+  sent_pad.triggerLeft = 0x77;
+  sent_pad.triggerRight = 0x88;
+  sent_pad.isConnected = false;
+  sf::Packet pad_input;
+  pad_input << NetPlay::MessageID::PadData
+            << static_cast<NetPlay::PadIndex>(0) << sent_pad.button
+            << sent_pad.analogA << sent_pad.analogB << sent_pad.stickX
+            << sent_pad.stickY << sent_pad.substickX << sent_pad.substickY
+            << sent_pad.triggerLeft << sent_pad.triggerRight
+            << sent_pad.isConnected;
+  first->SendAsync(std::move(pad_input), NetPlay::INPUT_CHANNEL);
+  GCPadStatus received_pad{};
+  if (!WaitFor([&] { return second->GetNetPads(0, false, &received_pad); }) ||
+      received_pad.button != sent_pad.button ||
+      received_pad.analogA != sent_pad.analogA ||
+      received_pad.analogB != sent_pad.analogB ||
+      received_pad.stickX != sent_pad.stickX ||
+      received_pad.stickY != sent_pad.stickY ||
+      received_pad.substickX != sent_pad.substickX ||
+      received_pad.substickY != sent_pad.substickY ||
+      received_pad.triggerLeft != sent_pad.triggerLeft ||
+      received_pad.triggerRight != sent_pad.triggerRight ||
+      received_pad.isConnected != sent_pad.isConnected)
+    return 22;
+
+  first->SetLocalControllerCount(1);
+  if (!WaitFor([&] {
+        const NetPlay::PadMappingArray server_mapping = server->GetPadMapping();
+        const NetPlay::PadMappingArray client_mapping = first->GetPadMappingSnapshot();
+        return std::ranges::count(server_mapping, first->GetLocalPlayerId()) == 1 &&
+               std::ranges::count(client_mapping, first->GetLocalPlayerId()) == 1;
+      }))
+    return 23;
+  const NetPlay::PlayerId second_pid = second->GetLocalPlayerId();
+  second.reset();
+  if (!WaitFor([&] {
+        return std::ranges::count(server->GetPadMapping(), second_pid) == 0 &&
+               std::ranges::count(first->GetPadMappingSnapshot(), second_pid) == 0;
+      }))
+    return 24;
+  third = std::make_unique<NetPlay::NetPlayClient>(
+      "127.0.0.1", server->GetPort(), &third_ui, "GameCube Reconnect",
+      NetPlay::NetTraversalConfig{}, 2);
+  if (!third->IsConnected() ||
+      !WaitFor([&] { return third->GetAssignedControllerCount() == 2; }) ||
+      !WaitFor([&] {
+        return std::ranges::count(server->GetPadMapping(), third->GetLocalPlayerId()) == 2 &&
+               std::ranges::count(first->GetPadMappingSnapshot(), third->GetLocalPlayerId()) == 2;
+      }))
+    return 25;
+  third.reset();
+  first.reset();
   server.reset();
 
   NetPlay::SetCompatibilityFingerprint("host-build");

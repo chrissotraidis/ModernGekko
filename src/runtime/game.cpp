@@ -205,6 +205,7 @@ GameInspectResult InspectGame(const std::filesystem::path& input_root)
     metadata.main_rel = rel_path;
   metadata.game_name = std::move(name);
   metadata.disc_id = std::move(id);
+  metadata.revision = (*boot)[7];
   metadata.platform = wii_magic == 0x5d1c9ea3 ? GamePlatform::Wii : GamePlatform::GameCube;
   metadata.entry_point = entry_point;
   metadata.dol_sha256 = Sha256(std::move(*dol));

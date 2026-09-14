@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -79,9 +80,22 @@ struct ControllerOption
   std::string device;
 };
 
+static const char* MeleeRevisionLabel(const moderngekko::GameMetadata& metadata)
+{
+  if (metadata.disc_id != "GALE01") return nullptr;
+  if (metadata.dol_sha256 == "dc21504513424350bda17a7c65e82371b45112a5dfc1e9f2749a8b7ab0eff646")
+    return "USA v1.02 (recommended)";
+  if (metadata.dol_sha256 == "0f09e240e37586a996b2bcbc8904fb589cf2d7cfa79c916e33a7cf1c316a2448")
+    return "USA v1.00";
+  return "Unsupported Melee executable";
+}
+
 std::string RequiredGameError(const moderngekko::GameMetadata& metadata)
 {
 #ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  if (metadata.disc_id == "GALE01" &&
+      std::string(MeleeRevisionLabel(metadata)) == "Unsupported Melee executable")
+    return "Use a verified USA v1.02 (recommended) or v1.00 executable.";
   if (metadata.disc_id != MODERNGEKKO_REQUIRED_DISC_ID)
     return "expected disc ID " MODERNGEKKO_REQUIRED_DISC_ID ", found " + metadata.disc_id;
 #endif
@@ -161,6 +175,95 @@ fs::path DocumentsDirectory()
   if (const char* home = std::getenv("HOME"))
     return fs::path(home) / "Documents";
   return fs::current_path();
+}
+
+void ReplaceAll(std::string* text, std::string_view needle, std::string_view replacement)
+{
+  if (needle.empty())
+    return;
+  std::size_t position = 0;
+  while ((position = text->find(needle, position)) != std::string::npos)
+  {
+    text->replace(position, needle.size(), replacement);
+    position += replacement.size();
+  }
+}
+
+std::string RedactDiagnosticText(std::string text, const fs::path& user_directory,
+                                 const fs::path& game_root)
+{
+  // Replace the paths the product owns first so useful suffixes remain. Then
+  // conservatively remove any other common macOS absolute path through the
+  // end of its line rather than risk exporting a private location.
+  ReplaceAll(&text, game_root.string(), "<game-root>");
+  ReplaceAll(&text, user_directory.string(), "<user-directory>");
+  if (const char* home = std::getenv("HOME"))
+    ReplaceAll(&text, home, "<home>");
+  if (const char* temporary = std::getenv("TMPDIR"))
+    ReplaceAll(&text, temporary, "<temporary>");
+
+  static constexpr std::array<std::string_view, 5> absolute_prefixes = {
+      "/Users/", "/private/", "/var/", "/tmp/", "/Volumes/"};
+  for (std::string_view prefix : absolute_prefixes)
+  {
+    std::size_t position = 0;
+    while ((position = text.find(prefix, position)) != std::string::npos)
+    {
+      const std::size_t line_end = text.find_first_of("\r\n", position);
+      text.replace(position, line_end == std::string::npos ? std::string::npos : line_end - position,
+                   "<absolute-path>");
+      position += std::string_view("<absolute-path>").size();
+    }
+  }
+  return text;
+}
+
+bool ExportDiagnosticReport(const fs::path& user_directory, const fs::path& game_root,
+                            fs::path* report_path, std::string* error)
+{
+  const fs::path log_path = user_directory / "Logs" / MODERNGEKKO_LOG_FILENAME;
+  std::ifstream log_file(log_path, std::ios::binary);
+  std::string log = "unavailable\n";
+  if (log_file)
+  {
+    log.assign(std::istreambuf_iterator<char>(log_file), std::istreambuf_iterator<char>());
+    constexpr std::size_t MAX_LOG_BYTES = 1024 * 1024;
+    if (log.size() > MAX_LOG_BYTES)
+      log.erase(0, log.size() - MAX_LOG_BYTES);
+  }
+  log = RedactDiagnosticText(std::move(log), user_directory, game_root);
+
+  const fs::path directory = user_directory / "Diagnostics";
+  std::error_code ec;
+  fs::create_directories(directory, ec);
+  if (ec)
+  {
+    if (error)
+      *error = "can't create diagnostics directory: " + ec.message();
+    return false;
+  }
+
+  const fs::path destination = directory / "Latest-MeleePad-Diagnostic.log";
+  std::ofstream report(destination, std::ios::binary | std::ios::trunc);
+  if (!report)
+  {
+    if (error)
+      *error = "can't write diagnostic report";
+    return false;
+  }
+  report << "MeleePad Diagnostic Report v1\n"
+            "issuesURL=https://github.com/chrissotraidis/meleepad/issues\n\n"
+            "[Current Runner Log]\n"
+         << log;
+  if (!report)
+  {
+    if (error)
+      *error = "can't finish diagnostic report";
+    return false;
+  }
+  if (report_path)
+    *report_path = destination;
+  return true;
 }
 
 fs::path ExecutableDirectory(const char* argv0)
@@ -383,7 +486,10 @@ bool ExtractDisc(const fs::path& image, const fs::path& user_directory,
   const fs::path output = games_directory / "Game";
 #else
   const fs::path games_directory = user_directory / "games";
-  const fs::path output = games_directory / disc_id;
+  const auto revision = volume->GetRevision(partition);
+  const std::string game_folder = disc_id == "GALE01" && revision && *revision != 0
+      ? disc_id + "-r" + std::to_string(*revision) : disc_id;
+  const fs::path output = games_directory / game_folder;
 #endif
   std::error_code ec;
   if (fs::is_directory(output, ec))
@@ -406,7 +512,7 @@ bool ExtractDisc(const fs::path& image, const fs::path& user_directory,
     return true;
   }
 
-  const fs::path staging = games_directory / (disc_id + ".extracting");
+  const fs::path staging = games_directory / (output.filename().string() + ".extracting");
   fs::remove_all(staging, ec);
   fs::create_directories(staging / "files", ec);
   if (ec)
@@ -502,6 +608,7 @@ fs::path SiblingRunner(const char* argv0)
 int main(int argc, char** argv)
 {
   bool use_wayland = false;
+  bool export_diagnostics = false;
   std::optional<fs::path> extract_only;
   for (int i = 1; i < argc; ++i)
   {
@@ -509,12 +616,28 @@ int main(int argc, char** argv)
       use_wayland = false;
     else if (std::string_view(argv[i]) == "--wayland")
       use_wayland = true;
+    else if (std::string_view(argv[i]) == "--export-diagnostics")
+      export_diagnostics = true;
     else if (std::string_view(argv[i]) == "--extract" && i + 1 < argc)
       extract_only = argv[++i];
   }
 
   const fs::path user_directory = DefaultUserDirectory();
   const fs::path release_directory = ExecutableDirectory(argv[0]);
+  if (export_diagnostics)
+  {
+    fs::path report_path;
+    std::string error;
+    if (!ExportDiagnosticReport(user_directory,
+                                ReadDefaultGame(user_directory, release_directory),
+                                &report_path, &error))
+    {
+      std::cerr << "diagnostic export failed: " << error << '\n';
+      return 1;
+    }
+    std::cout << report_path << '\n';
+    return 0;
+  }
   if (extract_only)
   {
     ExtractionState extraction;
@@ -546,7 +669,7 @@ int main(int argc, char** argv)
     return 1;
 
   const float scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
-  SDL_Window* window = SDL_CreateWindow(MODERNGEKKO_FRONTEND_NAME, static_cast<int>(820 * scale),
+  SDL_Window* window = SDL_CreateWindow(MODERNGEKKO_FRONTEND_NAME, static_cast<int>(980 * scale),
                                         static_cast<int>(700 * scale),
                                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
   if (!window)
@@ -565,6 +688,7 @@ int main(int argc, char** argv)
     SDL_Quit();
     return 1;
   }
+  SDL_SetWindowMinimumSize(window, static_cast<int>(860 * scale), static_cast<int>(620 * scale));
   SDL_SetRenderVSync(renderer, 1);
 
   IMGUI_CHECKVERSION();
@@ -573,13 +697,34 @@ int main(int argc, char** argv)
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.IniFilename = nullptr;
   ImGui::StyleColorsDark();
+  auto& style = ImGui::GetStyle();
+  style.WindowPadding = ImVec2(24, 24);
+  style.FramePadding = ImVec2(14, 10);
+  style.ItemSpacing = ImVec2(12, 14);
+  style.FrameRounding = 8;
+  style.ChildRounding = 14;
+  style.WindowBorderSize = 0;
+  style.Colors[ImGuiCol_WindowBg] = ImVec4(.055f, .063f, .085f, 1);
+  style.Colors[ImGuiCol_ChildBg] = ImVec4(.085f, .098f, .125f, 1);
+  style.Colors[ImGuiCol_Text] = ImVec4(.94f, .95f, .98f, 1);
+  style.Colors[ImGuiCol_TextDisabled] = ImVec4(.63f, .68f, .76f, 1);
+  style.Colors[ImGuiCol_Button] = ImVec4(.15f, .19f, .26f, 1);
+  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(.22f, .29f, .39f, 1);
+  style.Colors[ImGuiCol_ButtonActive] = ImVec4(.22f, .38f, .57f, 1);
+  style.Colors[ImGuiCol_FrameBg] = ImVec4(.12f, .15f, .20f, 1);
+#ifdef __APPLE__
+  if (fs::is_regular_file("/System/Library/Fonts/SFNS.ttf"))
+    io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNS.ttf", 18);
+#endif
   ImGui::GetStyle().ScaleAllSizes(scale);
   ImGui::GetStyle().FontScaleDpi = scale;
   ImGui_ImplSDL3_InitForSDLRenderer(window, renderer);
   ImGui_ImplSDLRenderer3_Init(renderer);
 
-  std::vector<fs::path> images = FindDiscImages();
-  std::optional<fs::path> selected_image = images.empty() ? std::nullopt : std::optional(images[0]);
+  // Disc access should be an explicit user action. Recursively scanning the
+  // Documents directory at startup can block behind macOS privacy consent
+  // before the launcher has created a responsive window.
+  std::optional<fs::path> selected_image;
   fs::path current_game = ReadDefaultGame(user_directory, release_directory);
   bool current_dol_changed = false;
   std::string current_dol_error;
@@ -626,6 +771,7 @@ int main(int argc, char** argv)
       configured_controllers.empty() ? config.controller : configured_controllers.front();
   int controller_index = FindController(controllers, selected_controller);
   std::string controller_status;
+  std::string diagnostic_status;
   const auto select_controller = [&](int index)
   {
     std::string message;
@@ -711,6 +857,7 @@ int main(int argc, char** argv)
     Host,
     Join,
   };
+  int page = 0;
   bool done = false;
   LaunchMode launch_mode = LaunchMode::None;
   while (!done)
@@ -765,14 +912,64 @@ int main(int argc, char** argv)
     ImGui::Begin(MODERNGEKKO_FRONTEND_NAME " Launcher", nullptr,
                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_NoSavedSettings);
+    ImGui::BeginChild("Navigation", ImVec2(190 * scale, 0), ImGuiChildFlags_None);
+    ImGui::PushFont(nullptr, 27 * scale);
     ImGui::TextUnformatted(MODERNGEKKO_FRONTEND_NAME);
-    ImGui::Separator();
-
+    ImGui::PopFont();
+    ImGui::TextDisabled("Melee on your Mac");
+    ImGui::Dummy(ImVec2(0, 24 * scale));
+    const char* pages[] = {"Play", "Display", "Controllers", "Online Play", "Game Data", "Diagnostics"};
+    for (int i = 0; i < 6; ++i) {
+      const bool selected = page == i;
+      if (selected) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.19f, .34f, .54f, 1));
+      if (ImGui::Button(pages[i], ImVec2(-1, 46 * scale))) page = i;
+      if (selected) ImGui::PopStyleColor();
+    }
+    ImGui::EndChild();
+    ImGui::SameLine();
+    ImGui::BeginChild("Content", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::PushFont(nullptr, 30 * scale);
+    ImGui::TextUnformatted(page == 0 ? "Ready when you are." : pages[page]);
+    ImGui::PopFont();
+    ImGui::Spacing();
+    if (page == 4) {
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+    if (std::string(MODERNGEKKO_REQUIRED_DISC_ID) == "GALE01") {
+      ImGui::TextWrapped("Melee USA v1.02 is recommended for new setups and future improvements. "
+                         "v1.00 keeps existing copies usable. Online peers need matching game "
+                         "versions and compatible builds. This does not enable Slippi.");
+      for (const auto& folder : {"GALE01-r2", "GALE01"}) {
+        const auto candidate = user_directory / "games" / folder;
+        const char* label = std::string(folder) == "GALE01-r2"
+            ? "Use USA v1.02 (recommended)" : "Use USA v1.00";
+        if (candidate != current_game && fs::is_regular_file(candidate / "sys" / "main.dol") &&
+            ImGui::Button(label)) {
+          // Hash/inspect only when selected, never during the rendering loop.
+          auto game = moderngekko::InspectGame(candidate);
+          std::string error = game ? RequiredGameError(*game.metadata) : game.error;
+          if (game && error.empty() &&
+              WriteDefaultGame(user_directory, release_directory, candidate, &error)) {
+            current_game = candidate;
+            current_metadata = std::move(game);
+          } else { std::lock_guard lock(dialog.mutex); dialog.error = error; }
+        }
+      }
+    }
+#endif
+    }
     if (current_metadata)
     {
-      ImGui::Text("Ready: %s [%s]", current_metadata.metadata->game_name.c_str(),
-                  current_metadata.metadata->disc_id.c_str());
-      if (ImGui::Button("Play", ImVec2(180 * scale, 42 * scale)))
+      if (page == 0 || page == 3 || page == 4) {
+      if (const char* revision = MeleeRevisionLabel(*current_metadata.metadata))
+        ImGui::TextUnformatted(revision);
+      ImGui::TextWrapped("%s", current_metadata.metadata->game_name.c_str());
+      ImGui::Spacing();
+      }
+      if (page == 0) {
+      ImGui::TextDisabled("Your game is installed and ready to launch.");
+      ImGui::Dummy(ImVec2(0, 24 * scale));
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.20f, .43f, .73f, 1));
+      if (ImGui::Button("Play Melee", ImVec2(-1, 64 * scale)))
       {
         if (ensure_controller())
         {
@@ -780,7 +977,17 @@ int main(int argc, char** argv)
           done = true;
         }
       }
-      ImGui::SameLine();
+      ImGui::PopStyleColor();
+      ImGui::Dummy(ImVec2(0, 20 * scale));
+      ImGui::SeparatorText("Session settings");
+      ImGui::Text("Resolution: %s", resolutions[resolution_index].text);
+      ImGui::TextWrapped("Controller: %s", selected_controller == "Quartz/0/Keyboard & Mouse"
+          ? "Keyboard & Mouse" : selected_controller.c_str());
+      ImGui::TextDisabled("Adjust your setup from the sidebar.");
+      }
+      if (page == 3) {
+      ImGui::TextWrapped("Experimental peer-to-peer play. Everyone needs the same Melee version and compatible builds. Slippi matchmaking is not supported.");
+      ImGui::Spacing();
       if (ImGui::Button("Host Netplay", ImVec2(180 * scale, 42 * scale)))
       {
         if (ensure_controller())
@@ -836,12 +1043,17 @@ int main(int argc, char** argv)
           }
         }
       }
+      }
     }
-    else
+    else if (page == 0)
     {
-      ImGui::TextUnformatted("No extracted game is configured yet.");
+      ImGui::TextWrapped("Bring your copy of Melee. Import a USA v1.02 or v1.00 disc image to get started.");
+      ImGui::Spacing();
+      if (ImGui::Button("Import Game Data", ImVec2(-1, 60 * scale))) page = 4;
     }
 
+    if (page == 1) {
+    ImGui::TextWrapped("Choose how Melee looks on your display. Higher resolutions require more graphics power.");
     ImGui::Spacing();
     ImGui::TextUnformatted("Graphics backend");
     if (ImGui::BeginCombo("##graphics_backend",
@@ -892,7 +1104,7 @@ int main(int argc, char** argv)
       }
     }
     ImGui::Spacing();
-    ImGui::TextUnformatted("Internal resolution (Dolphin EFB upscale)");
+    ImGui::TextUnformatted("Render resolution");
     if (ImGui::BeginCombo("##resolution", resolutions[resolution_index].text))
     {
       for (std::size_t i = 0; i < resolutions.size(); ++i)
@@ -933,7 +1145,10 @@ int main(int argc, char** argv)
       }
     }
     ImGui::Spacing();
-    ImGui::TextUnformatted("Controller profile");
+    }
+    if (page == 2) {
+    ImGui::TextWrapped("Use your existing controller mapping, or choose a connected gamepad below.");
+    ImGui::TextUnformatted("Controller");
     const char* controller_preview = controller_index >= 0
                                          ? controllers[controller_index].label.c_str()
                                      : selected_controller.empty() ? "No SDL gamepad detected"
@@ -964,12 +1179,15 @@ int main(int argc, char** argv)
       select_controller(controller_index);
     ImGui::EndDisabled();
     ImGui::Spacing();
-    ImGui::TextUnformatted("Netplay");
+    ImGui::TextWrapped("%s", controller_status.c_str());
+    }
+    if (page == 3) {
+    ImGui::SeparatorText("Connection");
     ImGui::SetNextItemWidth(220 * scale);
     ImGui::InputText("Nickname", netplay_nickname.data(), netplay_nickname.size());
     ImGui::SetNextItemWidth(220 * scale);
     ImGui::InputText("Host / IP", netplay_address.data(), netplay_address.size());
-    ImGui::SetNextItemWidth(120 * scale);
+    ImGui::SetNextItemWidth(190 * scale);
     ImGui::InputInt("UDP port", &netplay_port);
     netplay_port = std::clamp(netplay_port, 1, 65535);
     ImGui::Checkbox("Automatic input buffer", &automatic_buffer);
@@ -979,19 +1197,22 @@ int main(int argc, char** argv)
       ImGui::SliderInt("Buffer frames", &manual_buffer, 1, 20);
     }
     ImGui::Spacing();
-    ImGui::TextUnformatted("Game disc image");
+    }
+    if (page == 4) {
+    ImGui::SeparatorText("Import a disc image");
     if (selected_image)
       ImGui::TextWrapped("%s", selected_image->string().c_str());
     else
-      ImGui::TextDisabled("No ISO, WBFS, or RVZ selected");
+      ImGui::TextDisabled("No disc image selected");
 
     if (!extraction.running)
     {
-      if (ImGui::Button("Browse for ISO / WBFS / RVZ"))
+      if (ImGui::Button("Browse for Disc Image"))
       {
         static constexpr SDL_DialogFileFilter filters[] = {
-            {"Disc images", "iso;wbfs;rvz"},
-            {"ISO", "iso"},
+            {"Disc images", "iso;gcm;ciso;wbfs;rvz"},
+            {"ISO / GCM", "iso;gcm"},
+            {"CISO", "ciso"},
             {"WBFS", "wbfs"},
             {"RVZ", "rvz"}};
         const std::string documents = DocumentsDirectory().string();
@@ -1027,6 +1248,7 @@ int main(int argc, char** argv)
       ImGui::ProgressBar(progress, ImVec2(-1, 0));
     }
 
+    }
     {
       std::lock_guard lock(extraction.mutex);
       if (!extraction.status.empty())
@@ -1041,7 +1263,28 @@ int main(int argc, char** argv)
     }
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::TextWrapped("Controller: %s", controller_status.c_str());
+    if (page == 5) {
+    ImGui::TextWrapped("Export a report after a slow session or an unexpected issue. The report helps us understand what happened while you played.");
+    if (ImGui::Button("Export Diagnostics"))
+    {
+      fs::path report_path;
+      std::string error;
+      if (ExportDiagnosticReport(user_directory, current_game, &report_path, &error))
+      {
+        diagnostic_status = "Saved: " + report_path.string();
+      }
+      else
+      {
+        std::lock_guard lock(dialog.mutex);
+        dialog.error = std::move(error);
+      }
+    }
+    if (!diagnostic_status.empty())
+      ImGui::TextWrapped("%s", diagnostic_status.c_str());
+    ImGui::Spacing();
+    ImGui::Separator();
+    }
+    ImGui::EndChild();
     ImGui::End();
 
     ImGui::Render();
@@ -1146,7 +1389,15 @@ int main(int argc, char** argv)
       {
         SDL_HideWindow(window);
         int exit_code = 1;
-        const bool waited = SDL_WaitProcess(process, true, &exit_code);
+        bool waited = false;
+        while (!(waited = SDL_WaitProcess(process, false, &exit_code)))
+        {
+          SDL_Event event;
+          while (SDL_PollEvent(&event))
+          {
+          }
+          SDL_Delay(10);
+        }
         SDL_DestroyProcess(process);
         if (!waited || exit_code != 0)
         {

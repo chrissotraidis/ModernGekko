@@ -4,6 +4,7 @@
 #include "moderngekko/runtime.hpp"
 #include "netplay_session.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <csignal>
@@ -36,7 +37,8 @@ void Usage() {
                "       [--graphics <backend>] [--audio <backend>]\n"
                "       [--mods <directory>] [--no-mods]\n"
                "       [--wayland] [-X11] [--headless] [--allow-interpreter]\n"
-               "       [--netplay-host | --netplay-join <host>] "
+               "       [--netplay-host | --netplay-join <host> |\n"
+               "        --netplay-room-host | --netplay-room-join <code>] "
                "[--netplay-port <port>]\n"
                "       [--nickname <name>] [--buffer <auto|1-20>] "
                "[--controller <device>]...\n"
@@ -131,6 +133,7 @@ int RunMain(int argc, char **argv) {
   std::filesystem::path module_path;
   bool use_default_mods = true;
   std::optional<moderngekko::frontend::NetplayRole> netplay_role;
+  bool netplay_use_traversal = false;
   std::string netplay_address;
   std::optional<std::uint16_t> netplay_port;
   std::string netplay_nickname;
@@ -174,6 +177,13 @@ int RunMain(int argc, char **argv) {
     else if (arg == "--netplay-join") {
       netplay_role = moderngekko::frontend::NetplayRole::Join;
       netplay_address = value("--netplay-join");
+    } else if (arg == "--netplay-room-host") {
+      netplay_role = moderngekko::frontend::NetplayRole::Host;
+      netplay_use_traversal = true;
+    } else if (arg == "--netplay-room-join") {
+      netplay_role = moderngekko::frontend::NetplayRole::Join;
+      netplay_use_traversal = true;
+      netplay_address = value("--netplay-room-join");
     } else if (arg == "--netplay-port") {
       const std::string port_value = value("--netplay-port");
       unsigned int port = 0;
@@ -222,6 +232,9 @@ int RunMain(int argc, char **argv) {
     config.graphics.backend = frontend_config.graphics_backend;
   config.fullscreen = frontend_config.fullscreen;
   config.show_fps_in_title = frontend_config.show_fps_in_title;
+  config.input.background_input =
+      moderngekko::frontend::ControllerRequiresBackgroundInput(
+          frontend_config.controller);
   if (use_default_mods) {
     config.mod_directories.push_back(executable_directory / "Mods");
     config.mod_directories.push_back(config.user_directory / "Mods");
@@ -292,15 +305,33 @@ int RunMain(int argc, char **argv) {
     else {
       const std::string module_name =
           "g" + inspected.metadata->disc_id + "_recomp" + LibrarySuffix();
+      // Prefer a module identified by executable hash so disc revisions with
+      // the same six-character game ID never select each other's native code.
+      const auto revision_module = executable_directory / "StaticRecompModules" /
+                                   inspected.metadata->dol_sha256 / module_name;
+      const auto user_revision_module = config.user_directory / "StaticRecompModules" /
+                                        inspected.metadata->dol_sha256 / module_name;
       const auto bundled = executable_directory / module_name;
-      const auto user_module =
-          config.user_directory / "StaticRecompModules" / module_name;
-      if (std::filesystem::is_regular_file(bundled))
+      const auto user_module = config.user_directory / "StaticRecompModules" / module_name;
+      const bool legacy_allowed = inspected.metadata->disc_id != "GALE01" ||
+          inspected.metadata->dol_sha256 ==
+              "0f09e240e37586a996b2bcbc8904fb589cf2d7cfa79c916e33a7cf1c316a2448";
+      if (std::filesystem::is_regular_file(revision_module))
+        module_path = revision_module;
+      else if (std::filesystem::is_regular_file(user_revision_module))
+        module_path = user_revision_module;
+      else if (legacy_allowed && std::filesystem::is_regular_file(bundled))
         module_path = bundled;
-      else if (std::filesystem::is_regular_file(user_module))
+      else if (legacy_allowed && std::filesystem::is_regular_file(user_module))
         module_path = user_module;
     }
   }
+#ifdef MODERNGEKKO_REQUIRED_DISC_ID
+  if (module_path.empty() && inspected.metadata->disc_id == "GALE01") {
+    std::cerr << "This Melee version needs its matching locally built game module.\n";
+    return 2;
+  }
+#endif
   if (!module_path.empty())
     config.module =
         moderngekko::ModuleSource::DynamicPath(std::move(module_path));
@@ -313,6 +344,7 @@ int RunMain(int argc, char **argv) {
   if (netplay_role) {
     moderngekko::frontend::NetplayOptions options;
     options.role = *netplay_role;
+    options.use_traversal = netplay_use_traversal;
     options.address = netplay_address.empty() ? frontend_config.netplay_address
                                               : netplay_address;
     options.port = netplay_port.value_or(frontend_config.netplay_port);
@@ -334,6 +366,9 @@ int RunMain(int argc, char **argv) {
       std::cerr << "netplay requires at least one selected controller\n";
       return 2;
     }
+    config.input.background_input = std::ranges::any_of(
+        options.controllers,
+        moderngekko::frontend::ControllerRequiresBackgroundInput);
     frontend_config.netplay_address = options.address;
     frontend_config.netplay_port = options.port;
     frontend_config.netplay_nickname = options.nickname;

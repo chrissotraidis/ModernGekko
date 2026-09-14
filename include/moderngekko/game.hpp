@@ -20,6 +20,7 @@ struct GameMetadata
   std::filesystem::path main_rel;
   std::string game_name;
   std::string disc_id;
+  std::uint16_t revision = 0;
   GamePlatform platform = GamePlatform::GameCube;
   std::uint32_t entry_point = 0;
   std::string dol_sha256;

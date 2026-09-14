@@ -2,11 +2,19 @@
 
 #include "AudioCommon/AudioCommon.h"
 #include "Common/Config/Config.h"
+#include "Common/IniFile.h"
 #include "Common/HookableEvent.h"
+#include "Common/Logging/Log.h"
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/BootManager.h"
+#include "Core/Cheats/GeckoCode.h"
+#include "Core/Cheats/GeckoCodeConfig.h"
+#include "Core/Config/CheatSettings.h"
+#include "Core/Config/ConfigManager.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/Config/SessionSettings.h"
+#include "Core/Config/StaticRecompSettings.h"
 #include "Core/Core.h"
 #include "Core/HW/GBACore.h"
 #include "Core/Host.h"
@@ -18,23 +26,40 @@
 #include "DolphinNoGUI/Platform.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/PerformanceMetrics.h"
+#include "VideoCommon/Statistics.h"
 #include "VideoCommon/VideoConfig.h"
+#include "VideoCommon/VideoEvents.h"
 #include "dolphin_runtime_internal.hpp"
 #include "moderngekko/cpu_state.h"
 #include "moderngekko/mod_loader.hpp"
 #include "moderngekko/module_loader.hpp"
 
+#ifdef MODERNGEKKO_HAVE_IOS
+extern "C" void ModernGekkoSetIOSRenderSurface(void* surface);
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <cstdio>
 #include <fmt/format.h>
 #include <mutex>
 #include <thread>
 #include <utility>
+
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if !defined(_WIN32) && \
+    (!defined(MODERNGEKKO_HAVE_IOS) || (defined(__APPLE__) && TARGET_OS_SIMULATOR))
+#define MODERNGEKKO_HAVE_SAVESTATE_SIGNALS 1
+#endif
 
 namespace {
 static_assert(sizeof(ModernGekkoModuleDesc) == sizeof(StaticRecompModuleDesc));
@@ -50,6 +75,60 @@ std::unique_ptr<BootSessionData> s_boot_session_data;
 u64 s_previous_net_wait_ns = 0;
 double s_net_wait_ms_per_second = 0.0;
 std::chrono::steady_clock::time_point s_previous_net_wait_sample;
+
+#if defined(MODERNGEKKO_HAVE_SAVESTATE_SIGNALS)
+Platform* s_savestate_signal_platform = nullptr;
+
+void SaveStateSignalHandler(int) {
+  if (s_savestate_signal_platform)
+    s_savestate_signal_platform->RequestSaveState();
+}
+
+void LoadStateSignalHandler(int) {
+  if (s_savestate_signal_platform)
+    s_savestate_signal_platform->RequestLoadState();
+}
+
+class ScopedSavestateSignalHandlers {
+public:
+  explicit ScopedSavestateSignalHandlers(Platform* platform) {
+    const char* enabled = std::getenv("MODERNGEKKO_ENABLE_SAVESTATE_SIGNALS");
+    if (!enabled || enabled[0] != '1' || enabled[1] != '\0')
+      return;
+
+    struct sigaction action {};
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = SA_RESTART;
+    action.sa_handler = SaveStateSignalHandler;
+    s_savestate_signal_platform = platform;
+    if (sigaction(SIGUSR1, &action, &m_previous_save) != 0) {
+      s_savestate_signal_platform = nullptr;
+      return;
+    }
+
+    action.sa_handler = LoadStateSignalHandler;
+    if (sigaction(SIGUSR2, &action, &m_previous_load) != 0) {
+      sigaction(SIGUSR1, &m_previous_save, nullptr);
+      s_savestate_signal_platform = nullptr;
+      return;
+    }
+    m_active = true;
+  }
+
+  ~ScopedSavestateSignalHandlers() {
+    if (!m_active)
+      return;
+    sigaction(SIGUSR1, &m_previous_save, nullptr);
+    sigaction(SIGUSR2, &m_previous_load, nullptr);
+    s_savestate_signal_platform = nullptr;
+  }
+
+private:
+  struct sigaction m_previous_save {};
+  struct sigaction m_previous_load {};
+  bool m_active = false;
+};
+#endif
 
 std::string FormatWindowTitle(const std::string &title, double fps) {
   if (!std::isfinite(fps) || fps < 0.0)
@@ -132,6 +211,74 @@ Host_CreateGBAHost(std::weak_ptr<HW::GBA::Core>) {
 }
 
 namespace moderngekko {
+namespace {
+std::atomic<RuntimeLogCallback> s_runtime_log_callback{nullptr};
+std::atomic<void*> s_runtime_log_user_data{nullptr};
+
+const char* RuntimeLogCategory(Common::Log::LogType type)
+{
+  using Common::Log::LogType;
+  switch (type)
+  {
+  case LogType::AUDIO:
+  case LogType::AUDIO_INTERFACE:
+    return "audio";
+  case LogType::COMMANDPROCESSOR:
+    return "command-processor";
+  case LogType::CORE:
+  case LogType::BOOT:
+    return "core";
+  case LogType::GPFIFO:
+    return "fifo";
+  case LogType::HOST_GPU:
+    return "host-gpu";
+  case LogType::POWERPC:
+    return "powerpc";
+  case LogType::VIDEO:
+  case LogType::VIDEOINTERFACE:
+    return "video";
+  default:
+    return "runtime";
+  }
+}
+
+void ForwardDolphinLog(Common::Log::LogLevel level, Common::Log::LogType type,
+                       const char* message, void*)
+{
+  const RuntimeLogCallback callback =
+      s_runtime_log_callback.load(std::memory_order_acquire);
+  if (!callback)
+    return;
+  callback(level == Common::Log::LogLevel::LERROR ? RuntimeLogLevel::Error :
+                                                    RuntimeLogLevel::Warning,
+           RuntimeLogCategory(type), message,
+           s_runtime_log_user_data.load(std::memory_order_relaxed));
+}
+
+std::uint64_t HashProjection(const Statistics& stats)
+{
+  std::uint64_t hash = 1469598103934665603ull;
+  const auto add = [&hash](const void* bytes, std::size_t size) {
+    const auto* data = static_cast<const std::uint8_t*>(bytes);
+    for (std::size_t index = 0; index < size; ++index)
+    {
+      hash ^= data[index];
+      hash *= 1099511628211ull;
+    }
+  };
+  add(stats.proj.data(), stats.proj.size() * sizeof(stats.proj[0]));
+  add(stats.gproj.data(), stats.gproj.size() * sizeof(stats.gproj[0]));
+  return hash;
+}
+}  // namespace
+
+void SetDolphinLogCallback(RuntimeLogCallback callback, void* user_data)
+{
+  s_runtime_log_user_data.store(user_data, std::memory_order_relaxed);
+  s_runtime_log_callback.store(callback, std::memory_order_release);
+  Common::Log::SetEmbedderLogCallback(callback ? ForwardDolphinLog : nullptr, nullptr);
+}
+
 struct Runtime::Impl {
   RuntimeConfig config;
   GameMetadata metadata;
@@ -139,10 +286,24 @@ struct Runtime::Impl {
   std::unique_ptr<Platform> platform;
   std::unique_ptr<ModManager> mods;
   Common::EventHook state_hook;
+  Common::EventHook diagnostics_frame_hook;
   bool ui_initialized = false;
   bool controllers_initialized = false;
   bool booted = false;
   std::atomic<bool> running{false};
+  std::atomic<std::uint64_t> diagnostic_frame_count{0};
+  std::atomic<std::uint64_t> diagnostic_projection_hash{0};
+  std::atomic<std::uint32_t> diagnostic_draw_calls{0};
+  std::atomic<std::uint32_t> diagnostic_primitives{0};
+  std::atomic<std::uint32_t> diagnostic_bp_loads{0};
+  std::atomic<std::uint32_t> diagnostic_cp_loads{0};
+  std::atomic<std::uint32_t> diagnostic_xf_loads{0};
+  std::atomic<std::uint32_t> diagnostic_shader_changes{0};
+  std::atomic<std::uint32_t> diagnostic_textures_created{0};
+  std::atomic<std::uint32_t> diagnostic_textures_alive{0};
+  std::atomic<std::uint32_t> diagnostic_vertex_shaders_created{0};
+  std::atomic<std::uint32_t> diagnostic_pixel_shaders_created{0};
+  std::atomic<std::uint32_t> diagnostic_scissor_count{0};
 };
 
 namespace detail {
@@ -185,6 +346,15 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   GameInspectResult inspected = InspectGame(config.game_root);
   if (!inspected)
     return {{}, RuntimeError{RuntimeErrorCode::InvalidGame, inspected.error}};
+
+  if (!config.disc_image.empty()) {
+    std::error_code ec;
+    const auto disc_image = std::filesystem::weakly_canonical(config.disc_image, ec);
+    if (ec || !std::filesystem::is_regular_file(disc_image))
+      return {{}, RuntimeError{RuntimeErrorCode::InvalidGame,
+                               "disc image is not a readable file"}};
+    config.disc_image = disc_image;
+  }
 
   const ModernGekkoModuleRequirements requirements = {
       MODERNGEKKO_CPU_ABI_VERSION, static_cast<std::uint32_t>(sizeof(CPUState)),
@@ -237,13 +407,72 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
 
   if (!s_external_ui_common) {
     UICommon::SetUserDirectory(impl->config.user_directory.string());
+    UICommon::CreateDirectories();
     UICommon::Init();
     impl->ui_initialized = true;
+  }
+
+  // Executable-only boots do not give Dolphin a disc volume from which to
+  // load revision-specific GameINIs. Seed the static core's pre-boot setting
+  // from the metadata ModernGekko already validated in boot.bin.
+  const Common::IniFile default_game_ini = SConfig::LoadDefaultGameIni(
+      impl->metadata.disc_id, impl->metadata.revision);
+  const auto* core = default_game_ini.GetSection("Core");
+  u32 idle_pc = 0;
+  if (core && core->Get("StaticRecompIdlePC", &idle_pc) && idle_pc != 0) {
+    Config::SetCurrent(Config::MAIN_STATICRECOMP_IDLE_PC, idle_pc);
+  }
+  u32 secondary_idle_pc = 0;
+  if (core && core->Get("StaticRecompSecondaryIdlePC", &secondary_idle_pc) &&
+      secondary_idle_pc != 0) {
+    Config::SetCurrent(Config::MAIN_STATICRECOMP_SECONDARY_IDLE_PC, secondary_idle_pc);
+  }
+  u32 caller_idle_pc = 0;
+  u32 caller_idle_lr = 0;
+  if (core && core->Get("StaticRecompCallerIdlePC", &caller_idle_pc) &&
+      core->Get("StaticRecompCallerIdleLR", &caller_idle_lr) &&
+      caller_idle_pc != 0 && caller_idle_lr != 0) {
+    Config::SetCurrent(Config::MAIN_STATICRECOMP_CALLER_IDLE_PC, caller_idle_pc);
+    Config::SetCurrent(Config::MAIN_STATICRECOMP_CALLER_IDLE_LR, caller_idle_lr);
+  }
+
+  if (impl->config.enable_gmse01_60fps) {
+    if (impl->metadata.disc_id != "GMSE01") {
+      if (impl->ui_initialized)
+        UICommon::Shutdown();
+      return {{}, RuntimeError{RuntimeErrorCode::InvalidGame,
+                               "experimental 60FPS is available only for GMSE01"}};
+    }
+
+    Common::IniFile empty_local_ini;
+    auto codes = Gecko::LoadCodes(SConfig::LoadDefaultGameIni("GMSE01", std::nullopt),
+                                  empty_local_ini);
+    const auto sixty_fps = std::ranges::find(codes, std::string("60FPS"),
+                                             &Gecko::GeckoCode::name);
+    if (sixty_fps == codes.end()) {
+      if (impl->ui_initialized)
+        UICommon::Shutdown();
+      return {{}, RuntimeError{RuntimeErrorCode::InitializationFailed,
+                               "bundled GMSE01 60FPS Gecko code is unavailable"}};
+    }
+
+    for (auto& code : codes)
+      code.enabled = &code == &*sixty_fps;
+    Gecko::UpdateSyncedCodes(codes);
+    Config::SetBase(Config::MAIN_ENABLE_CHEATS, true);
+    Config::SetBase(Config::SESSION_CODE_SYNC_OVERRIDE, true);
+    std::fprintf(stderr,
+                 "[moderngekko] experimental GMSE01 60FPS boot code enabled; "
+                 "StaticRecomp SMC/fallback counters follow at shutdown\n");
   }
   Config::SetBase(Config::MAIN_FULLSCREEN, impl->config.fullscreen);
 
   if (impl->config.headless)
     impl->platform = Platform::CreateHeadlessPlatform();
+#ifdef MODERNGEKKO_HAVE_IOS
+  else
+    impl->platform = Platform::CreateIOSPlatform();
+#endif
 #ifdef _WIN32
   else
     impl->platform = Platform::CreateWin32Platform();
@@ -267,12 +496,34 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
                          "the requested Dolphin host platform is unavailable"}};
   }
 
+#ifdef MODERNGEKKO_HAVE_IOS
+  ModernGekkoSetIOSRenderSurface(impl->config.render_surface);
+#endif
+
   const WindowSystemInfo wsi = impl->platform->GetWindowSystemInfo();
   UICommon::InitControllers(wsi);
   impl->controllers_initialized = true;
   impl->platform->SetTitle(impl->title);
+  SetDolphinLogCallback(impl->config.log_callback, impl->config.log_user_data);
 
   Config::SetBase(Config::MAIN_CPU_CORE, PowerPC::CPUCore::StaticRecomp);
+#ifdef MODERNGEKKO_HAVE_IOS
+  // Split guest execution from video work, but bound how far the CPU may run
+  // ahead. Unconstrained dual-core execution reproduced a malformed FIFO
+  // command; SyncGPU keeps the architectural speedup under guest-cycle control.
+  Config::SetBase(Config::MAIN_CPU_THREAD, true);
+  Config::SetBase(Config::MAIN_SYNC_GPU, true);
+  // The default 200k-tick ceiling is only about 0.41 ms of guest time and
+  // blocks the CPU during pipeline-dense transitions. Keep execution bounded,
+  // but allow roughly 2.06 ms of lead so short video-side bursts do not stall
+  // guest progress.
+  Config::SetBase(Config::MAIN_SYNC_GPU_MAX_DISTANCE, 1000000);
+#endif
+  if (impl->config.emulated_cpu_clock_scale)
+  {
+    Config::SetBase(Config::MAIN_OVERCLOCK_ENABLE, true);
+    Config::SetBase(Config::MAIN_OVERCLOCK, *impl->config.emulated_cpu_clock_scale);
+  }
   if (!impl->config.graphics.backend.empty())
     Config::SetBase(Config::MAIN_GFX_BACKEND, impl->config.graphics.backend);
   else if (impl->config.headless)
@@ -284,6 +535,20 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   Config::SetBase(Config::GFX_SHADER_COMPILATION_MODE,
                   ShaderCompilationMode::AsynchronousUberShaders);
   Config::SetBase(Config::GFX_WAIT_FOR_SHADERS_BEFORE_STARTING, true);
+#ifdef MODERNGEKKO_HAVE_IOS
+  // Compile newly encountered specialized pipelines on otherwise idle cores
+  // so the ubershader fallback remains brief during stage transitions.
+  Config::SetBase(Config::GFX_SHADER_COMPILER_THREADS, 3);
+  // Melee updates one XFB allocation across consecutive fields. Treating its
+  // stable cache identity as unchanged pixels visibly freezes transitions.
+  Config::SetBase(Config::GFX_HACK_SKIP_DUPLICATE_XFBS, false);
+  // Dolphin's ARM64 vertex loader generates executable host code. iOS forbids
+  // that JIT path, so use the portable software vertex loader.
+  Config::SetBase(Config::GFX_VERTEX_LOADER_TYPE, VertexLoaderType::Software);
+  // Favor uninterrupted playback over the lower-latency desktop default.
+  Config::SetBase(Config::MAIN_AUDIO_BUFFER_SIZE, 120);
+  Config::SetBase(Config::MAIN_AUDIO_FILL_GAPS, true);
+#endif
   const std::vector<std::string> audio_backends =
       AudioCommon::GetSoundBackends();
   if (impl->config.headless) {
@@ -292,6 +557,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
              !std::ranges::contains(audio_backends,
                                     impl->config.audio.backend)) {
     constexpr std::array preferred_backends = {
+#ifdef MODERNGEKKO_HAVE_IOS
+        BACKEND_COREAUDIO,
+#endif
         BACKEND_CUBEB, BACKEND_PULSEAUDIO, BACKEND_ALSA};
     const auto preferred =
         std::ranges::find_if(preferred_backends, [&](const char *backend) {
@@ -332,6 +600,7 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
 Runtime::~Runtime() {
   RequestStop();
   if (m_impl->booted) {
+    m_impl->diagnostics_frame_hook = {};
     Core::Stop(Core::System::GetInstance());
     Core::Shutdown(Core::System::GetInstance());
   }
@@ -345,6 +614,7 @@ Runtime::~Runtime() {
   s_window_title.clear();
   s_show_fps_in_title = true;
   s_runtime_active = false;
+  SetDolphinLogCallback(nullptr, nullptr);
 }
 
 RuntimeRunResult Runtime::Run() {
@@ -356,12 +626,13 @@ RuntimeRunResult Runtime::Run() {
   std::unique_ptr<BootParameters> boot;
   {
     std::lock_guard lock(s_runtime_mutex);
+    const std::filesystem::path& boot_path = m_impl->config.disc_image.empty() ?
+        m_impl->metadata.main_dol : m_impl->config.disc_image;
     if (s_boot_session_data)
       boot = BootParameters::GenerateFromFile(
-          m_impl->metadata.main_dol.string(), std::move(*s_boot_session_data));
+          boot_path.string(), std::move(*s_boot_session_data));
     else
-      boot =
-          BootParameters::GenerateFromFile(m_impl->metadata.main_dol.string());
+      boot = BootParameters::GenerateFromFile(boot_path.string());
     s_boot_session_data.reset();
   }
   if (!boot) {
@@ -383,21 +654,57 @@ RuntimeRunResult Runtime::Run() {
                          "Dolphin could not boot sys/main.dol"}};
   }
   m_impl->booted = true;
-  std::jthread title_thread;
+  m_impl->diagnostics_frame_hook =
+      GetVideoEvents().after_frame_event.Register([this](Core::System&) {
+        const Statistics::ThisFrame frame = g_stats.this_frame;
+        m_impl->diagnostic_frame_count.fetch_add(1, std::memory_order_relaxed);
+        m_impl->diagnostic_projection_hash.store(HashProjection(g_stats),
+                                                 std::memory_order_relaxed);
+        m_impl->diagnostic_draw_calls.store(frame.num_draw_calls,
+                                            std::memory_order_relaxed);
+        m_impl->diagnostic_primitives.store(frame.num_prims + frame.num_dl_prims,
+                                            std::memory_order_relaxed);
+        m_impl->diagnostic_bp_loads.store(frame.num_bp_loads + frame.num_bp_loads_in_dl,
+                                          std::memory_order_relaxed);
+        m_impl->diagnostic_cp_loads.store(frame.num_cp_loads + frame.num_cp_loads_in_dl,
+                                          std::memory_order_relaxed);
+        m_impl->diagnostic_xf_loads.store(frame.num_xf_loads + frame.num_xf_loads_in_dl,
+                                          std::memory_order_relaxed);
+        m_impl->diagnostic_shader_changes.store(frame.num_shader_changes,
+                                                std::memory_order_relaxed);
+        m_impl->diagnostic_textures_created.store(g_stats.num_textures_created,
+                                                  std::memory_order_relaxed);
+        m_impl->diagnostic_textures_alive.store(g_stats.num_textures_alive,
+                                                std::memory_order_relaxed);
+        m_impl->diagnostic_vertex_shaders_created.store(g_stats.num_vertex_shaders_created,
+                                                        std::memory_order_relaxed);
+        m_impl->diagnostic_pixel_shaders_created.store(g_stats.num_pixel_shaders_created,
+                                                       std::memory_order_relaxed);
+        m_impl->diagnostic_scissor_count.store(
+            static_cast<std::uint32_t>(g_stats.scissors.size()),
+            std::memory_order_relaxed);
+      });
+  std::atomic_bool stop_title_thread = false;
+  std::thread title_thread;
   if (!m_impl->config.headless && m_impl->config.show_fps_in_title) {
-    title_thread = std::jthread([](std::stop_token stop_token) {
-      while (!stop_token.stop_requested()) {
+    title_thread = std::thread([&stop_title_thread] {
+      while (!stop_title_thread.load(std::memory_order_relaxed)) {
         Host_UpdateTitle({});
-        for (int i = 0; i < 10 && !stop_token.stop_requested(); ++i)
+        for (int i = 0;
+             i < 10 && !stop_title_thread.load(std::memory_order_relaxed); ++i)
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
     });
   }
+#if defined(MODERNGEKKO_HAVE_SAVESTATE_SIGNALS)
+  ScopedSavestateSignalHandlers savestate_signal_handlers(m_impl->platform.get());
+#endif
   m_impl->platform->MainLoop();
-  title_thread.request_stop();
+  stop_title_thread.store(true, std::memory_order_relaxed);
   if (title_thread.joinable())
     title_thread.join();
   m_impl->platform->SaveWindowGeometry();
+  m_impl->diagnostics_frame_hook = {};
   Core::Stop(Core::System::GetInstance());
   Core::Shutdown(Core::System::GetInstance());
   m_impl->booted = false;
@@ -431,4 +738,25 @@ const GameMetadata &Runtime::GetGameMetadata() const {
   return m_impl->metadata;
 }
 const std::string &Runtime::GetWindowTitle() const { return m_impl->title; }
+
+RuntimeDiagnosticsSnapshot Runtime::GetDiagnosticsSnapshot() const {
+  return {
+      .frame_count = m_impl->diagnostic_frame_count.load(std::memory_order_relaxed),
+      .projection_hash = m_impl->diagnostic_projection_hash.load(std::memory_order_relaxed),
+      .draw_calls = m_impl->diagnostic_draw_calls.load(std::memory_order_relaxed),
+      .primitives = m_impl->diagnostic_primitives.load(std::memory_order_relaxed),
+      .bp_loads = m_impl->diagnostic_bp_loads.load(std::memory_order_relaxed),
+      .cp_loads = m_impl->diagnostic_cp_loads.load(std::memory_order_relaxed),
+      .xf_loads = m_impl->diagnostic_xf_loads.load(std::memory_order_relaxed),
+      .shader_changes = m_impl->diagnostic_shader_changes.load(std::memory_order_relaxed),
+      .textures_created =
+          m_impl->diagnostic_textures_created.load(std::memory_order_relaxed),
+      .textures_alive = m_impl->diagnostic_textures_alive.load(std::memory_order_relaxed),
+      .vertex_shaders_created =
+          m_impl->diagnostic_vertex_shaders_created.load(std::memory_order_relaxed),
+      .pixel_shaders_created =
+          m_impl->diagnostic_pixel_shaders_created.load(std::memory_order_relaxed),
+      .scissor_count = m_impl->diagnostic_scissor_count.load(std::memory_order_relaxed),
+  };
+}
 } // namespace moderngekko

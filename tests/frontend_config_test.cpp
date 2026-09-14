@@ -22,14 +22,23 @@ int main() {
 
   std::string error;
   const std::string controller = "SDL/0/Test Controller";
+  if (moderngekko::frontend::ControllerRequiresBackgroundInput(controller) ||
+      !moderngekko::frontend::ControllerRequiresBackgroundInput(
+          "Pipe/0/meleepad"))
+    return 14;
   if (!moderngekko::frontend::SaveConfig(directory, "1920x1080", false,
                                          controller, &error))
     return 1;
 
   const auto loaded = moderngekko::frontend::LoadConfig(directory, false);
+#if defined(__APPLE__)
+  constexpr std::string_view expected_backend = "Metal";
+#else
+  constexpr std::string_view expected_backend = "Vulkan";
+#endif
   if (!loaded || loaded.dolphin_scale != 3 || loaded.show_fps_in_title ||
       loaded.controller != controller ||
-      loaded.graphics_backend != "Vulkan") {
+      loaded.graphics_backend != expected_backend) {
     return 2;
   }
 
@@ -91,6 +100,39 @@ int main() {
       !generated.contains("[GCPad2]\nDevice = SDL/1/Second Controller\n") ||
       generated.contains("[Wiimote") || generated.contains("[BalanceBoard]")) {
     return 5;
+  }
+  const std::array keyboard_controllers = {std::string("Quartz/0/Keyboard & Mouse")};
+  if (!moderngekko::frontend::GenerateControllerConfig(
+          directory, keyboard_controllers, &error))
+    return 17;
+  std::ifstream keyboard_input(directory / "Config" / CONTROLLER_CONFIG_NAME);
+  const std::string keyboard_generated{std::istreambuf_iterator<char>(keyboard_input),
+                                       std::istreambuf_iterator<char>()};
+  if (!keyboard_generated.contains("Buttons/A = J\n") ||
+      !keyboard_generated.contains("Buttons/Start = Return\n") ||
+      !keyboard_generated.contains("Main Stick/Up = W\n") ||
+      !keyboard_generated.contains("Triggers/L = Q\n") ||
+      keyboard_generated.contains("Button A") ||
+      keyboard_generated.contains("Motor L"))
+    return 18;
+  const std::array pipe_controllers = {std::string("Pipe/0/meleepad")};
+  if (!moderngekko::frontend::GenerateControllerConfig(
+          directory, pipe_controllers, &error))
+    return 15;
+  std::ifstream pipe_input(directory / "Config" / CONTROLLER_CONFIG_NAME);
+  const std::string pipe_generated{std::istreambuf_iterator<char>(pipe_input),
+                                   std::istreambuf_iterator<char>()};
+  if (!pipe_generated.contains("Device = Pipe/0/meleepad\n") ||
+      !pipe_generated.contains("Buttons/Z = `Button Z`\n") ||
+      !pipe_generated.contains("Buttons/Start = `Button START`\n") ||
+      !pipe_generated.contains("Main Stick/Up = `Axis MAIN Y -`\n") ||
+      !pipe_generated.contains("C-Stick/Right = `Axis C X +`\n") ||
+      !pipe_generated.contains("Triggers/L = `Button L`\n") ||
+      !pipe_generated.contains("Triggers/L-Analog = `Axis L +`\n") ||
+      !pipe_generated.contains("D-Pad/Up = `Button D_UP`\n") ||
+      !pipe_generated.contains("Options/Always Connected = True\n") ||
+      pipe_generated.contains("Rumble/Motor")) {
+    return 16;
   }
 #else
   if (!generated.contains("Buttons/A = `Shoulder L`\n") ||

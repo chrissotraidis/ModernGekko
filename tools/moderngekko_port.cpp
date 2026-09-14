@@ -41,6 +41,8 @@ struct BuildOptions
   std::string backend = "c";
 #endif
   fs::path output;
+  fs::path pgo_profile;
+  bool pgo_generate = false;
   std::vector<std::string> runner_arguments;
 };
 
@@ -84,6 +86,45 @@ std::uint64_t Fnv1a(std::string_view value)
   for (unsigned char c : value)
     hash = (hash ^ c) * 0x100000001b3ULL;
   return hash;
+}
+
+std::optional<std::string> ModuleSourceFingerprint(const fs::path& source_root)
+{
+  const std::array roots = {
+      source_root / "vendor/dolphin/GXRuntime/include",
+      source_root / "vendor/dolphin/GXRuntime/src/core",
+      source_root / "vendor/dolphin/module-template",
+  };
+  std::vector<fs::path> files;
+  std::error_code error;
+  for (const fs::path& root : roots)
+  {
+    for (fs::recursive_directory_iterator iterator(root, error), end; iterator != end;
+         iterator.increment(error))
+    {
+      if (error)
+        return std::nullopt;
+      if (iterator->is_regular_file(error))
+        files.push_back(iterator->path());
+      if (error)
+        return std::nullopt;
+    }
+    if (error)
+      return std::nullopt;
+  }
+  std::sort(files.begin(), files.end());
+
+  std::string identity;
+  for (const fs::path& file : files)
+  {
+    const auto hash = moderngekko::HashFileSha256(file);
+    if (!hash)
+      return std::nullopt;
+    identity += fs::relative(file, source_root).generic_string() + "=" + *hash + "\n";
+  }
+  std::ostringstream fingerprint;
+  fingerprint << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
+  return fingerprint.str();
 }
 
 std::string Trim(std::string value)
@@ -436,6 +477,35 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     return std::nullopt;
   }
 
+  std::optional<std::string> pgo_profile_hash;
+  if (options.pgo_generate && !options.pgo_profile.empty())
+  {
+    std::cerr << "--pgo-generate and --pgo-profile are mutually exclusive\n";
+    return std::nullopt;
+  }
+  if ((options.pgo_generate || !options.pgo_profile.empty()) &&
+      (options.backend != "c" || compiler != "clang"))
+  {
+    std::cerr << "PGO requires the C backend and Clang\n";
+    return std::nullopt;
+  }
+  if (!options.pgo_profile.empty())
+  {
+    std::error_code error;
+    options.pgo_profile = fs::weakly_canonical(options.pgo_profile, error);
+    if (error || !fs::is_regular_file(options.pgo_profile))
+    {
+      std::cerr << "PGO profile is unavailable: " << options.pgo_profile << '\n';
+      return std::nullopt;
+    }
+    pgo_profile_hash = moderngekko::HashFileSha256(options.pgo_profile);
+    if (!pgo_profile_hash)
+    {
+      std::cerr << "failed to hash PGO profile: " << options.pgo_profile << '\n';
+      return std::nullopt;
+    }
+  }
+
   const std::string compiler_identity = ReadCommand(compiler + " --version 2>&1");
   if (compiler_identity.empty())
   {
@@ -447,6 +517,12 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   if (!dolrecomp_hash)
   {
     std::cerr << "DolRecomp compiler is unavailable: " << dolrecomp << '\n';
+    return std::nullopt;
+  }
+  const auto module_source_fingerprint = ModuleSourceFingerprint(source_root);
+  if (!module_source_fingerprint)
+  {
+    std::cerr << "module runtime sources are unavailable under " << source_root << '\n';
     return std::nullopt;
   }
 #if defined(__x86_64__) || defined(_M_X64)
@@ -461,6 +537,9 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   {
     flags = "compile:-O2 -flto=thin -fvisibility=hidden -ffp-contract=off -fno-fast-math "
             "link:-flto=thin";
+#if defined(__APPLE__)
+    flags += " cmake:platform-response-files";
+#endif
 #if defined(__linux__)
     flags += " -fuse-ld=lld";
 #endif
@@ -473,13 +552,17 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
   {
     flags = "compile:/O2 /fp:strict";
   }
+  if (pgo_profile_hash)
+    flags += " pgo-profile-sha256=" + *pgo_profile_hash;
+  else if (options.pgo_generate)
+    flags += " pgo-generate coverage-mapping";
   const std::string identity = std::string(RECOMPCORE_REVISION) + "|dolrecomp=" +
       std::string(DOLRECOMP_REVISION) + "|module-abi=" +
       std::to_string(MODERNGEKKO_MODULE_ABI_VERSION) + "|cpu-abi=" +
       std::to_string(MODERNGEKKO_CPU_ABI_VERSION) + "|" + compiler_identity + "|" +
       std::string(architecture) + "|" + flags + "|backend=" + options.backend +
       "|patches=" + patches.fingerprint + "|dolrecomp_binary=" +
-      *dolrecomp_hash;
+      *dolrecomp_hash + "|module-sources=" + *module_source_fingerprint;
   std::ostringstream key_tail;
   key_tail << std::hex << std::setfill('0') << std::setw(16) << Fnv1a(identity);
   const std::string cache_key = game.dol_sha256 + "-" + key_tail.str();
@@ -510,7 +593,12 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
              << "architecture=" << architecture << '\n'
              << "flags=" << flags << '\n'
              << "backend=" << options.backend << '\n'
-             << "patches=" << patches.fingerprint << '\n';
+             << "patches=" << patches.fingerprint << '\n'
+             << "module_sources=" << *module_source_fingerprint << '\n';
+    if (pgo_profile_hash)
+      manifest << "pgo_profile_sha256=" << *pgo_profile_hash << '\n';
+    else if (options.pgo_generate)
+      manifest << "pgo_generate=1\n";
     fs::create_directories(options.output / game.disc_id);
     std::ofstream active(options.output / game.disc_id / "active-module.txt");
     active << module.string() << '\n';
@@ -577,7 +665,12 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
     std::ofstream{normalized_smc};
 
   const unsigned compile_jobs = std::max(1u, std::thread::hardware_concurrency());
-  std::string configure = "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
+  std::string configure =
+#if defined(__APPLE__)
+      "cmake -S " +
+#else
+      "cmake -E env CMAKE_NINJA_FORCE_RESPONSE_FILE=1 cmake -S " +
+#endif
       Quote(source_root / "vendor/dolphin/module-template") +
       " -B " + Quote(module_build) + " -G Ninja -DCMAKE_BUILD_TYPE=Release" +
       " -DCMAKE_C_COMPILER=" + compiler + " -DGAME_ID=" + game.disc_id +
@@ -585,6 +678,18 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
       " -DGXRUNTIME_DIR=" + Quote(source_root / "vendor/dolphin/GXRuntime") +
       " -DCHASSIS_ABI_DIR=" +
       Quote(source_root / "vendor/dolphin/Source/Core/Core/PowerPC/StaticRecomp");
+  if (pgo_profile_hash)
+  {
+    configure += " " +
+                 Quote(fs::path("-DCMAKE_C_FLAGS=-fprofile-instr-use=" +
+                                options.pgo_profile.string()));
+  }
+  else if (options.pgo_generate)
+  {
+    configure += " " +
+                 Quote(fs::path("-DCMAKE_C_FLAGS=-fprofile-instr-generate "
+                                "-fcoverage-mapping"));
+  }
   if (!RunCommand(configure) ||
       !RunCommand("cmake --build " + Quote(module_build) + " -j" +
                   std::to_string(compile_jobs)))
@@ -601,7 +706,7 @@ std::optional<fs::path> Build(const char* argv0, const fs::path& root,
 void Usage()
 {
   std::cerr << "usage: moderngekko-port inspect <game-root>\n"
-               "       moderngekko-port build <game-root> [--backend c|llvm] [--toolchain auto|clang|gcc|msvc] [--output path]\n"
+               "       moderngekko-port build <game-root> [--backend c|llvm] [--toolchain auto|clang|gcc|msvc] [--pgo-generate | --pgo-profile path] [--output path]\n"
                "       moderngekko-port run <game-root> [build options] [-- runner options]\n";
 }
 }  // namespace
@@ -630,6 +735,11 @@ int main(int argc, char** argv)
       options.backend = argv[++i];
     else if (arg == "--output" && i + 1 < argc)
       options.output = argv[++i];
+    else if ((command == "build" || command == "run") && arg == "--pgo-profile" &&
+             i + 1 < argc)
+      options.pgo_profile = argv[++i];
+    else if ((command == "build" || command == "run") && arg == "--pgo-generate")
+      options.pgo_generate = true;
     else if (command == "run")
       options.runner_arguments.push_back(arg);
     else
