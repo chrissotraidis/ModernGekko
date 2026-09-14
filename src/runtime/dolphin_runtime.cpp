@@ -466,6 +466,9 @@ RuntimeCreateResult Runtime::Create(RuntimeConfig config) {
   // Favor uninterrupted playback over the lower-latency desktop default.
   Config::SetBase(Config::MAIN_AUDIO_BUFFER_SIZE, 120);
   Config::SetBase(Config::MAIN_AUDIO_FILL_GAPS, true);
+#if defined(__ENVIRONMENT_TV_OS_VERSION_MIN_REQUIRED__)
+  Config::SetBase(Config::MAIN_DPL2_DECODER, true);
+#endif
 #endif
   const std::vector<std::string> audio_backends =
       AudioCommon::GetSoundBackends();
