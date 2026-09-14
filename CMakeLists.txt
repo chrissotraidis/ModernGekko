@@ -104,8 +104,10 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
     set(USE_UPNP OFF CACHE BOOL "" FORCE)
     set(ENCODE_FRAMEDUMPS OFF CACHE BOOL "" FORCE)
     set(ENABLE_LLVM OFF CACHE BOOL "" FORCE)
-    # Cubeb is Dolphin's only audio backend on macOS
-    if(APPLE OR WIN32)
+    # Cubeb is Dolphin's only audio backend on macOS; its audiounit backend
+    # uses macOS-only CoreAudio APIs, so Apple mobile builds (SunPad provides its own
+    # AVAudioEngine backend) keep cubeb off.
+    if((APPLE AND NOT (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")) OR WIN32)
         set(ENABLE_CUBEB ON CACHE BOOL "" FORCE)
     else()
         set(ENABLE_CUBEB OFF CACHE BOOL "" FORCE)
@@ -245,7 +247,15 @@ if(MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME)
             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformWin32.cpp)
         target_link_libraries(moderngekko PRIVATE dwmapi)
     endif()
-    if(APPLE)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+        # SunPad's CAMetalLayer platform for Apple mobile targets (no macOS windowing APIs)
+        target_sources(moderngekko PRIVATE
+            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformIOS.mm)
+        set_source_files_properties(
+            vendor/dolphin/Source/Core/DolphinNoGUI/PlatformIOS.mm
+            PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+        target_compile_definitions(moderngekko PRIVATE MODERNGEKKO_HAVE_IOS=1)
+    elseif(APPLE)
         # Dolphin's windowed backend for macOS
         target_sources(moderngekko PRIVATE
             vendor/dolphin/Source/Core/DolphinNoGUI/PlatformMacos.mm)

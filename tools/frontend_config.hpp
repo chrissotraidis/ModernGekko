@@ -21,7 +21,11 @@ struct GraphicsBackendOption {
 struct ConfigResult {
   int dolphin_scale = 0;
   std::string resolution;
+#if defined(__APPLE__)
+  std::string graphics_backend = "Metal";
+#else
   std::string graphics_backend = "Vulkan";
+#endif
   std::string controller;
   std::vector<std::string> controllers;
   bool show_fps_in_title = true;
