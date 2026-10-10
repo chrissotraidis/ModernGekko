@@ -20,6 +20,7 @@
 #include "Core/Host.h"
 #include "Core/NetPlay/NetPlayClient.h"
 #include "Core/PowerPC/JitInterface.h"
+#include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/StaticRecomp/StaticRecompModuleSource.h"
 #include "Core/System.h"
@@ -27,6 +28,7 @@
 #include "UICommon/UICommon.h"
 #include "VideoCommon/PerformanceMetrics.h"
 #include "VideoCommon/Statistics.h"
+#include "VideoCommon/TextureCacheBase.h"
 #include "VideoCommon/VideoConfig.h"
 #include "VideoCommon/VideoEvents.h"
 #include "dolphin_runtime_internal.hpp"
@@ -45,6 +47,7 @@ extern "C" void ModernGekkoSetIOSRenderSurface(void* surface);
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <fmt/format.h>
 #include <mutex>
 #include <thread>
@@ -583,6 +586,50 @@ RuntimeRunResult Runtime::Run() {
       SetGMSE01HeatwaveSuppressed(
           m_impl->gmse01_heatwave_suppressed.load(std::memory_order_relaxed));
   });
+  // Measurement only: MODERNGEKKO_DEV_WARP=<stage>,<scenario> boots GMSE01
+  // straight into one area so benchmarks need no input or save file. After the
+  // Nintendo logo, TApplication (0x803E9700) plays the opening movie with
+  // mMovie 9 and mNextArea set to the title stage 15, then enters gameplay in
+  // mNextArea. The thread rewrites mNextArea once during that movie, prints
+  // "[warp] entered" when gameplay starts there, and exits.
+  std::thread dev_warp_thread;
+  std::atomic_bool stop_dev_warp = false;
+  const char *dev_warp = std::getenv("MODERNGEKKO_DEV_WARP");
+  unsigned warp_stage = 0, warp_scenario = 0;
+  if (dev_warp && m_impl->metadata.disc_id == "GMSE01" &&
+      std::sscanf(dev_warp, "%u,%u", &warp_stage, &warp_scenario) == 2 &&
+      warp_stage < 0x40 && warp_scenario < 0x10) {
+    dev_warp_thread = std::thread([&stop_dev_warp, warp_stage, warp_scenario] {
+      constexpr u32 app = 0x803E9700;
+      auto &system = Core::System::GetInstance();
+      bool written = false;
+      for (int i = 0; i < 6000 && !stop_dev_warp.load(std::memory_order_relaxed);
+           ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (Core::GetState(system) != Core::State::Running)
+          continue;
+        const Core::CPUThreadGuard guard(system);
+        if (written) {
+          if (PowerPC::MMU::HostRead<u8>(guard, app + 0x08) == 5 &&
+              PowerPC::MMU::HostRead<u8>(guard, app + 0x0E) == warp_stage) {
+            std::fprintf(stderr, "[warp] entered stage %u\n", warp_stage);
+            return;
+          }
+          continue;
+        }
+        if (PowerPC::MMU::HostRead<u8>(guard, app + 0x08) != 4 ||
+            PowerPC::MMU::HostRead<u32>(guard, app + 0x18) != 9 ||
+            PowerPC::MMU::HostRead<u8>(guard, app + 0x12) != 15)
+          continue;
+        PowerPC::MMU::HostWrite<u8>(guard, static_cast<u8>(warp_stage), app + 0x12);
+        PowerPC::MMU::HostWrite<u8>(guard, static_cast<u8>(warp_scenario), app + 0x13);
+        std::fprintf(stderr, "[warp] next area set to stage %u scenario %u\n",
+                     warp_stage, warp_scenario);
+        written = true;
+      }
+      std::fprintf(stderr, "[warp] target area not reached\n");
+    });
+  }
   m_impl->diagnostics_frame_hook =
       GetVideoEvents().after_frame_event.Register([this](Core::System&) {
         const Statistics::ThisFrame frame = g_stats.this_frame;
@@ -625,12 +672,73 @@ RuntimeRunResult Runtime::Run() {
       }
     });
   }
+  // Measurement only: MODERNGEKKO_PERF_LOG=<seconds> prints Dolphin's
+  // performance metrics to stderr at that interval for benchmark scripts.
+  std::thread perf_log_thread;
+  if (const char *perf_log = std::getenv("MODERNGEKKO_PERF_LOG")) {
+    const int interval_ds = std::max(1, std::atoi(perf_log)) * 10;
+    perf_log_thread = std::thread([&stop_title_thread, interval_ds] {
+      const auto start = std::chrono::steady_clock::now();
+      u64 last_copies = 0, last_immediate = 0, last_ns = 0;
+      using EFBCopyStats::FlushReason;
+      constexpr FlushReason reasons[] = {FlushReason::DrawDone, FlushReason::Token,
+                                         FlushReason::TokenInterrupt, FlushReason::FrameEnd,
+                                         FlushReason::Other};
+      u64 last_reason_ns[std::size(reasons)] = {};
+      auto last_tick = start;
+      while (!stop_title_thread.load(std::memory_order_relaxed)) {
+        for (int i = 0; i < interval_ds &&
+                        !stop_title_thread.load(std::memory_order_relaxed);
+             ++i)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        const auto &perf = Core::System::GetInstance().GetPerfMetrics();
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - start).count();
+        const double tick = std::chrono::duration<double>(now - last_tick).count();
+        last_tick = now;
+        const u64 copies = EFBCopyStats::RamCopies();
+        const u64 immediate = EFBCopyStats::ImmediateCopies();
+        const u64 ns = EFBCopyStats::ReadbackNs();
+        // efb_wait_pct is the share of wall time spent in EFB-to-RAM readbacks.
+        std::fprintf(stderr,
+                     "[perf] t=%.1f fps=%.2f vps=%.2f speed=%.4f efb_copies=%llu "
+                     "efb_immediate=%llu efb_wait_pct=%.2f\n",
+                     elapsed, perf.GetFPS(), perf.GetVPS(), perf.GetSpeed(),
+                     static_cast<unsigned long long>(copies - last_copies),
+                     static_cast<unsigned long long>(immediate - last_immediate),
+                     tick > 0 ? 100.0 * static_cast<double>(ns - last_ns) / (tick * 1e9) : 0.0);
+        last_copies = copies;
+        last_immediate = immediate;
+        last_ns = ns;
+        double reason_pct[std::size(reasons)] = {};
+        for (size_t r = 0; r < std::size(reasons); ++r) {
+          const u64 value = EFBCopyStats::ReadbackNsFor(reasons[r]);
+          reason_pct[r] = tick > 0 ? 100.0 * static_cast<double>(value - last_reason_ns[r]) /
+                                         (tick * 1e9)
+                                   : 0.0;
+          last_reason_ns[r] = value;
+        }
+        std::fprintf(stderr,
+                     "[perf] efb_wait_by drawdone=%.2f token=%.2f token_int=%.2f "
+                     "frame_end=%.2f other=%.2f\n",
+                     reason_pct[0], reason_pct[1], reason_pct[2], reason_pct[3], reason_pct[4]);
+        const std::string census = EFBCopyStats::TakeCensus();
+        if (!census.empty())
+          std::fputs(census.c_str(), stderr);
+      }
+    });
+  }
   m_impl->platform->MainLoop();
   if (startup_patch_thread.joinable())
     startup_patch_thread.join();
+  stop_dev_warp.store(true, std::memory_order_relaxed);
+  if (dev_warp_thread.joinable())
+    dev_warp_thread.join();
   stop_title_thread.store(true, std::memory_order_relaxed);
   if (title_thread.joinable())
     title_thread.join();
+  if (perf_log_thread.joinable())
+    perf_log_thread.join();
   m_impl->platform->SaveWindowGeometry();
   m_impl->diagnostics_frame_hook = {};
   Core::Stop(Core::System::GetInstance());
