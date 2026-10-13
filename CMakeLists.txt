@@ -666,6 +666,14 @@ if(BUILD_TESTING)
             add_test(NAME moderngekko.sys_directory_${layout}
                 COMMAND $<TARGET_FILE:${sys_test}> "$<TARGET_FILE_DIR:${sys_test}>/Sys/")
         endforeach()
+        # A symlink outside the executable directory must still find its Sys.
+        set(sys_link "${CMAKE_CURRENT_BINARY_DIR}/sys-directory-link/probe")
+        add_custom_command(TARGET moderngekko_sys_directory_cli_test POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/sys-directory-link"
+            COMMAND ${CMAKE_COMMAND} -E create_symlink
+                $<TARGET_FILE:moderngekko_sys_directory_cli_test> "${sys_link}")
+        add_test(NAME moderngekko.sys_directory_symlink
+            COMMAND "${sys_link}" "$<TARGET_FILE_DIR:moderngekko_sys_directory_cli_test>/Sys/")
     endif()
 
     add_executable(moderngekko_dol_patch_test
