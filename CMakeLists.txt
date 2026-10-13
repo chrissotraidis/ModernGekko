@@ -651,6 +651,23 @@ if(WIN32)
 endif()
 
 if(BUILD_TESTING)
+    if(APPLE AND MODERNGEKKO_ENABLE_DOLPHIN_RUNTIME AND
+       NOT (CMAKE_SYSTEM_NAME STREQUAL "iOS" OR CMAKE_SYSTEM_NAME STREQUAL "tvOS"))
+        # Exercise the real resource lookup both beside a CLI and inside an app.
+        foreach(layout IN ITEMS cli bundle)
+            set(sys_test moderngekko_sys_directory_${layout}_test)
+            add_executable(${sys_test} tests/sys_directory_test.cpp)
+            target_compile_features(${sys_test} PRIVATE cxx_std_23)
+            target_include_directories(${sys_test} PRIVATE vendor/dolphin/Source/Core)
+            target_link_libraries(${sys_test} PRIVATE common)
+            if(layout STREQUAL "bundle")
+                set_target_properties(${sys_test} PROPERTIES MACOSX_BUNDLE TRUE)
+            endif()
+            add_test(NAME moderngekko.sys_directory_${layout}
+                COMMAND $<TARGET_FILE:${sys_test}> "$<TARGET_FILE_DIR:${sys_test}>/Sys/")
+        endforeach()
+    endif()
+
     add_executable(moderngekko_dol_patch_test
         tests/dol_patch_test.cpp
         tools/dol_patch.cpp)
